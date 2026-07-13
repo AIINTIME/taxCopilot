@@ -57,9 +57,15 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
             <span>Copilot</span>
           </div>
         </div>
-        <IconButton label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} className="sidebar__menu" onClick={onToggle}>
-          <Menu size={18} />
-        </IconButton>
+        {isCollapsed ? (
+          <button className="sidebar-logo-button" type="button" aria-label="Go to dashboard" onClick={() => navigate('/')}>
+            <img src="/logo/logo.png" alt="" />
+          </button>
+        ) : (
+          <IconButton label="Collapse sidebar" className="sidebar__menu" onClick={onToggle}>
+            <Menu size={18} />
+          </IconButton>
+        )}
       </div>
 
       <button className="new-chat" type="button" aria-label="New chat" onClick={() => navigate('/new-chat')}>

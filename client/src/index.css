@@ -735,7 +735,8 @@ a:focus-visible {
   background: #111827;
 }
 
-:root[data-theme="dark"] .brand__mark {
+:root[data-theme="dark"] .brand__mark,
+:root[data-theme="dark"] .sidebar-logo-button {
   border-color: rgba(71, 85, 105, 0.9);
   background: rgba(255, 255, 255, 0.94);
 }
@@ -775,6 +776,24 @@ a:focus-visible {
 }
 
 .brand__mark img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+}
+
+.sidebar-logo-button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #d7dfeb;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+}
+
+.sidebar-logo-button img {
   width: 26px;
   height: 26px;
   object-fit: contain;
