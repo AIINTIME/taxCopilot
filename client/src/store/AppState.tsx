@@ -27,7 +27,7 @@ const initialState: AppState = {
   error: null,
   followUps: [],
   settings: {
-    darkMode: false,
+    darkMode: true,
   },
 }
 
@@ -36,7 +36,12 @@ function loadState(): AppState {
   if (!saved) return initialState
 
   try {
-    return { ...initialState, ...JSON.parse(saved) as AppState }
+    const parsed = JSON.parse(saved) as AppState
+    return {
+      ...initialState,
+      ...parsed,
+      settings: { ...initialState.settings, ...parsed.settings },
+    }
   } catch {
     return initialState
   }

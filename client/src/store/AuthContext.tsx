@@ -8,8 +8,8 @@ type AuthContextValue = {
   accessToken: string | null
   isAuthenticated: boolean
   isLoading: boolean
-  login: (email: string, password: string) => Promise<void>
-  register: (name: string, email: string, password: string) => Promise<void>
+  login: (email: string, password: string, organizationId: string) => Promise<void>
+  register: (name: string, email: string, password: string, organizationId: string) => Promise<void>
   logout: () => Promise<void>
   updateProfile: (payload: { name: string; bio: string | null }) => Promise<void>
   uploadProfilePhoto: (photo: File) => Promise<void>
@@ -47,14 +47,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const login = useCallback(async (email: string, password: string) => {
-    const response = await authApi.login({ email, password })
+  const login = useCallback(async (email: string, password: string, organizationId: string) => {
+    const response = await authApi.login({ email, password, organization_id: organizationId })
     setUser(response.user)
     setAccessToken(response.access_token)
   }, [])
 
-  const register = useCallback(async (name: string, email: string, password: string) => {
-    const response = await authApi.register({ name, email, password })
+  const register = useCallback(async (name: string, email: string, password: string, organizationId: string) => {
+    const response = await authApi.register({ name, email, password, organization_id: organizationId })
     setUser(response.user)
     setAccessToken(response.access_token)
   }, [])

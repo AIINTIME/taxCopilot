@@ -1,11 +1,18 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
 
+export type Organization = {
+  id: string
+  slug: string
+  display_name: string
+}
+
 export type AuthUser = {
   id: string
   email: string
   name: string
   bio: string | null
   profile_photo_url: string | null
+  organization_id: string | null
   created_at: string
 }
 
@@ -18,10 +25,14 @@ export type AuthResponse = {
 type LoginPayload = {
   email: string
   password: string
+  organization_id: string
 }
 
-type RegisterPayload = LoginPayload & {
+type RegisterPayload = {
   name: string
+  email: string
+  password: string
+  organization_id: string
 }
 
 type UpdateProfilePayload = {
@@ -73,6 +84,9 @@ async function uploadRequest<T>(path: string, accessToken: string, formData: For
 }
 
 export const authApi = {
+  getOrganizations() {
+    return request<Organization[]>('/organizations')
+  },
   login(payload: LoginPayload) {
     return request<AuthResponse>('/auth/login', {
       method: 'POST',

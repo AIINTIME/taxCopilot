@@ -3,15 +3,63 @@ from datetime import datetime
 from pydantic import BaseModel, EmailStr, Field
 
 
+class OrganizationResponse(BaseModel):
+    id: str
+    slug: str
+    display_name: str
+
+
+class AdminRegisterRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=50)
+    password: str = Field(min_length=8, max_length=128)
+    organization_id: str
+
+
+class AdminLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=50)
+    password: str = Field(min_length=1, max_length=128)
+    organization_id: str
+
+
+class AdminResponse(BaseModel):
+    id: str
+    username: str
+    organization_id: str
+    created_at: datetime
+
+
+class AdminAuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    admin: AdminResponse
+
+
+class AdminStatsResponse(BaseModel):
+    total_users: int
+    total_audit_logs: int
+    total_provisions: int
+    security_alerts: int
+
+
+class AdminUserItem(BaseModel):
+    id: str
+    name: str
+    email: str
+    organization_id: str | None = None
+    created_at: datetime
+
+
 class RegisterRequest(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+    organization_id: str
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
+    organization_id: str
 
 
 class UserResponse(BaseModel):
@@ -20,6 +68,7 @@ class UserResponse(BaseModel):
     name: str
     bio: str | None = None
     profile_photo_url: str | None = None
+    organization_id: str | None = None
     created_at: datetime
 
 

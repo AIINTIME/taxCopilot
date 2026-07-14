@@ -8,18 +8,46 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Organization {
+  id          String   @id @default(uuid())
+  slug        String   @unique
+  displayName String
+  createdAt   DateTime @default(now())
+  admins      Admin[]
+  users       User[]
+}
+
+model Admin {
+  id             String        @id @default(uuid())
+  username       String
+  passwordHash   String
+  organizationId String
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  users          User[]
+
+  @@unique([username, organizationId])
+}
+
 model User {
-  id           String         @id @default(uuid())
-  email        String         @unique
-  name         String
-  bio          String?
+  id              String        @id @default(uuid())
+  email           String        @unique
+  name            String
+  bio             String?
   profilePhotoUrl String?
-  passwordHash String
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-  authLogs     AuthEventLog[]
+  passwordHash    String
+  adminId         String?
+  admin           Admin?        @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  organizationId  String?
+  organization    Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  authLogs        AuthEventLog[]
 
   @@index([email])
+  @@index([adminId])
+  @@index([organizationId])
 }
 
 model AuthEventLog {

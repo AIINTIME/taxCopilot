@@ -1,6 +1,10 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+import bcrypt as _bcrypt_module
+if not hasattr(_bcrypt_module, '__about__'):
+    _bcrypt_module.__about__ = type('obj', (object,), {'__version__': _bcrypt_module.__version__})()
+
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
@@ -45,6 +49,33 @@ def create_refresh_token(user_id: str) -> tuple[str, str]:
     token = jwt.encode(
         payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm
     )
+    return token, token_id
+
+
+def create_admin_access_token(admin_id: str) -> str:
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": admin_id,
+        "type": "admin_access",
+        "iat": now,
+        "exp": now + timedelta(minutes=settings.access_token_minutes),
+    }
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
+def create_admin_refresh_token(admin_id: str) -> tuple[str, str]:
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+    token_id = str(uuid4())
+    payload = {
+        "sub": admin_id,
+        "jti": token_id,
+        "type": "admin_refresh",
+        "iat": now,
+        "exp": now + timedelta(days=settings.refresh_token_days),
+    }
+    token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
     return token, token_id
 
 

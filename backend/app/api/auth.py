@@ -48,6 +48,7 @@ def serialize_user(user) -> UserResponse:
         name=user.name,
         bio=user.bio,
         profile_photo_url=user.profilePhotoUrl,
+        organization_id=user.organizationId,
         created_at=user.createdAt,
     )
 
@@ -132,11 +133,20 @@ async def register(
             status_code=status.HTTP_409_CONFLICT, detail="Email is already registered"
         )
 
+    org = await prisma.organization.find_unique(where={"id": payload.organization_id})
+    if org is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid organization"
+        )
+
+    first_admin = await prisma.admin.find_first(where={"organizationId": org.id})
     user = await prisma.user.create(
         data={
             "email": normalized_email,
             "name": payload.name.strip(),
             "passwordHash": hash_password(payload.password),
+            "organizationId": org.id,
+            "adminId": first_admin.id if first_admin else None,
         }
     )
     request.state.auth_user_id = user.id
@@ -153,9 +163,13 @@ async def login(
     settings: Settings = Depends(get_settings),
 ):
     user = await prisma.user.find_unique(where={"email": payload.email.lower()})
-    if user is None or not verify_password(payload.password, user.passwordHash):
+    if (
+        user is None
+        or not verify_password(payload.password, user.passwordHash)
+        or (user.organizationId is not None and user.organizationId != payload.organization_id)
+    ):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password"
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email, password, or organization"
         )
 
     request.state.auth_user_id = user.id
