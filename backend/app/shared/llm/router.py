@@ -1,6 +1,6 @@
-"""Provider router: tries the primary (Claude) provider, retries the fallback
-provider on failure/timeout, and logs (for the audit trail) which provider
-actually served each response.
+"""Provider router: tries the primary provider, retries the fallback provider
+on failure/timeout, and logs which provider actually served each response
+(for the audit trail).
 
 This is the only shared/llm/ module that services/rag/llm_client.py is
 allowed to import from.
@@ -8,16 +8,16 @@ allowed to import from.
 
 import logging
 
-from app.shared.llm.anthropic_provider import AnthropicProvider
 from app.shared.llm.base import LLMMessage, LLMProvider, LLMResponse
 from app.shared.llm.fallback_provider import FallbackProvider
+from app.shared.llm.primary_provider import PrimaryLLMProvider
 
 logger = logging.getLogger(__name__)
 
 
 class RoutedLLMProvider(LLMProvider):
     def __init__(self) -> None:
-        self._primary: LLMProvider = AnthropicProvider()
+        self._primary: LLMProvider = PrimaryLLMProvider()
         self._fallback: LLMProvider = FallbackProvider()
 
     async def generate(

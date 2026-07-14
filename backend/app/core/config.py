@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     )
     cookie_secure: bool = Field(default=False, alias="COOKIE_SECURE")
     environment: str = Field(default="development", alias="ENVIRONMENT")
+    pinecone_api_key: str = Field(default="", alias="PINECONE_API_KEY")
+    pinecone_index: str = Field(default="taxai", alias="PINECONE_INDEX")
+    neo4j_uri: str = Field(default="bolt://localhost:7687", alias="NEO4J_URI")
+    neo4j_user: str = Field(default="neo4j", alias="NEO4J_USER")
+    neo4j_password: str = Field(default="", alias="NEO4J_PASSWORD")
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"

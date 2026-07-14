@@ -86,3 +86,26 @@ class UpdateProfileRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
+
+
+class DocumentUploadResponse(BaseModel):
+    document_id: str
+    status: str  # "UPLOADED" | "SKIPPED_DUPLICATE"
+    chunks_embedded: int
+    rule_proposals_created: int
+    auto_approved_count: int
+    pending_review_count: int
+
+
+class RuleProposalItem(BaseModel):
+    id: str
+    document_id: str
+    source_chunk_id: str
+    section_number: str | None
+    asset_class: str | None
+    rate: str | None
+    evidence_span: str | None
+    evidence_verified: bool
+    status: str
+    auto_approved: bool
+    created_at: datetime

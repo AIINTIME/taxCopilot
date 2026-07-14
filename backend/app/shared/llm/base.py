@@ -1,6 +1,6 @@
-"""Abstract LLMProvider interface. Every concrete provider (Claude, fallback)
-implements this exact interface so callers (services/rag/llm_client.py, via
-router.py) never need to know which provider actually served a request.
+"""Abstract LLMProvider interface. Every concrete provider implements this
+exact interface so callers (services/rag/llm_client.py, via router.py) never
+need to know which provider actually served a request.
 
 Temperature=0 is a hard requirement on every call and must be enforced inside
 each provider's generate() implementation, not left to the caller to pass

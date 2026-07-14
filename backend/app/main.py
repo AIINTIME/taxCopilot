@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.admin import router as admin_router
+from app.shared.graph.neo4j_client import get_neo4j_client
 from app.api.admin_auth import router as admin_auth_router
 from app.api.auth import router as auth_router
 from app.core.config import get_settings
@@ -26,6 +27,7 @@ SEED_ORGS = [
 async def lifespan(app: FastAPI):
     await prisma.connect()
     await connect_redis()
+    get_neo4j_client()
 
     # Seed organizations
     for org_data in SEED_ORGS:
@@ -48,6 +50,7 @@ async def lifespan(app: FastAPI):
             )
 
     yield
+    await get_neo4j_client().close()
     await close_redis()
     await prisma.disconnect()
 

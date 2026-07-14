@@ -10,8 +10,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class LLMSettings(BaseSettings):
-    anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
-    anthropic_model: str = Field(default="claude-sonnet-5", alias="ANTHROPIC_MODEL")
+    primary_llm_api_key: str = Field(default="", alias="PRIMARY_LLM_API_KEY")
+    primary_llm_model: str = Field(default="gpt-4o", alias="PRIMARY_LLM_MODEL")
+    primary_llm_base_url: str = Field(
+        default="https://api.openai.com/v1", alias="PRIMARY_LLM_BASE_URL"
+    )
+    embedding_model: str = Field(
+        default="text-embedding-3-large", alias="EMBEDDING_MODEL"
+    )
+    embedding_dimensions: int = Field(default=1536, alias="EMBEDDING_DIMENSIONS")
     fallback_llm_api_key: str = Field(default="", alias="FALLBACK_LLM_API_KEY")
     fallback_llm_model: str = Field(default="", alias="FALLBACK_LLM_MODEL")
     llm_timeout_seconds: int = Field(default=30, alias="LLM_TIMEOUT_SECONDS")

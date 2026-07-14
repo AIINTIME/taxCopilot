@@ -9,12 +9,14 @@ datasource db {
 }
 
 model Organization {
-  id          String   @id @default(uuid())
-  slug        String   @unique
+  id          String              @id @default(uuid())
+  slug        String              @unique
   displayName String
-  createdAt   DateTime @default(now())
+  createdAt   DateTime            @default(now())
   admins      Admin[]
   users       User[]
+  documents   Document[]
+  proposals   GraphRuleProposal[]
 }
 
 model Admin {
@@ -26,6 +28,7 @@ model Admin {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   users          User[]
+  documents      Document[]
 
   @@unique([username, organizationId])
 }
@@ -99,6 +102,68 @@ model AuditLog {
 
   @@index([userId, createdAt])
   @@index([asOfDate])
+}
+
+enum DocumentStatus {
+  PROCESSING
+  EMBEDDED
+  FAILED
+}
+
+enum ProposalStatus {
+  PENDING_REVIEW
+  AUTO_APPROVED
+  APPROVED
+  REJECTED
+}
+
+/// Tracks every admin-uploaded document through the ingestion pipeline.
+model Document {
+  id                String            @id @default(uuid())
+  filename          String
+  contentHash       String            @unique
+  s3Path            String
+  organizationId    String
+  organization      Organization      @relation(fields: [organizationId], references: [id])
+  uploadedByAdminId String
+  uploadedByAdmin   Admin             @relation(fields: [uploadedByAdminId], references: [id])
+  chunksEmbedded    Int               @default(0)
+  status            DocumentStatus    @default(PROCESSING)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  proposals         GraphRuleProposal[]
+
+  @@index([organizationId])
+  @@index([uploadedByAdminId])
+}
+
+/// One row per chunk where the LLM extracted a tax rate rule. Saved regardless
+/// of evidence verification outcome — PENDING_REVIEW rows need human review.
+model GraphRuleProposal {
+  id                 String         @id @default(uuid())
+  documentId         String
+  document           Document       @relation(fields: [documentId], references: [id])
+  sourceChunkId      String
+  sourceChunkText    String
+  sectionNumber      String?
+  assetClass         String?
+  rate               String?
+  indexation         String?
+  conditionText      String?
+  effectiveFrom      String?
+  selector           String?
+  evidenceSpan       String?
+  evidenceVerified   Boolean        @default(false)
+  status             ProposalStatus @default(PENDING_REVIEW)
+  autoApproved       Boolean        @default(false)
+  committedToGraphAt DateTime?
+  organizationId     String
+  organization       Organization   @relation(fields: [organizationId], references: [id])
+  createdAt          DateTime       @default(now())
+
+  @@index([documentId])
+  @@index([status])
+  @@index([organizationId])
 }
 
 /// Statutory knowledge-graph provisions (permanent KG namespace), versioned

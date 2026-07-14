@@ -39,7 +39,9 @@ tomlkit==0.15.0
 typing-inspection==0.4.2
 typing_extensions==4.16.0
 uvicorn==0.51.0
-anthropic
+openai>=1.0.0
+pinecone>=3.0.0
+neo4j>=5.0.0
+pypdf>=3.0.0
 langgraph
-pypdf
 openpyxl
