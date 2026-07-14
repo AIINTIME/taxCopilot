@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.core.redis import close_redis, connect_redis
 from app.db import prisma
 from app.middleware import AuthEventLoggingMiddleware
+from app.services.query.routes import router as query_router
 
 
 @asynccontextmanager
@@ -34,6 +35,7 @@ app.add_middleware(AuthEventLoggingMiddleware)
 
 app.mount("/public", StaticFiles(directory="public"), name="public")
 app.include_router(auth_router)
+app.include_router(query_router)
 
 
 @app.get("/health")

@@ -36,3 +36,59 @@ model AuthEventLog {
   @@index([action, createdAt])
   @@index([userId])
 }
+
+enum TaxActRegime {
+  ACT_1961
+  ACT_2025
+}
+
+enum GateStatus {
+  VERIFIED
+  FLAGGED
+  PARTIAL
+}
+
+enum ProvisionStatus {
+  ACTIVE
+  SUPERSEDED
+}
+
+/// Insert-only audit trail for every AI/computation query. Rows are never
+/// updated or deleted. userId is intentionally a plain field (not a Prisma
+/// relation) so the existing User model does not need to be modified.
+model AuditLog {
+  id                String     @id @default(uuid())
+  userId            String?
+  query             String
+  retrievedChunkIds String[]
+  modelVersion      String
+  providerName      String
+  response          String
+  citations         Json
+  gateStatus        GateStatus
+  asOfDate          DateTime
+  createdAt         DateTime   @default(now())
+
+  @@index([userId, createdAt])
+  @@index([asOfDate])
+}
+
+/// Statutory knowledge-graph provisions (permanent KG namespace), versioned
+/// by effective date range and regime so retrieval can filter by as-of date.
+model KnowledgeGraphProvision {
+  id            String          @id @default(uuid())
+  sourceId      String
+  regime        TaxActRegime
+  tier          Int
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  status        ProvisionStatus @default(ACTIVE)
+  content       String
+  metadata      Json?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@index([regime, effectiveFrom, effectiveTo])
+  @@index([sourceId])
+  @@index([status])
+}
