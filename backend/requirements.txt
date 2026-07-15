@@ -45,3 +45,4 @@ neo4j>=5.0.0
 pypdf>=3.0.0
 langgraph
 openpyxl
+python-docx>=1.0.0

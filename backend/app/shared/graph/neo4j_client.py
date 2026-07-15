@@ -18,16 +18,20 @@ class Neo4jClient:
         )
 
     async def run_write(self, query: str, **params) -> list[dict]:
+        async def _write(tx):
+            result = await tx.run(query, **params)
+            return await result.data()
+
         async with self._driver.session() as session:
-            return await session.execute_write(
-                lambda tx: tx.run(query, **params).data()
-            )
+            return await session.execute_write(_write)
 
     async def run_read(self, query: str, **params) -> list[dict]:
+        async def _read(tx):
+            result = await tx.run(query, **params)
+            return await result.data()
+
         async with self._driver.session() as session:
-            return await session.execute_read(
-                lambda tx: tx.run(query, **params).data()
-            )
+            return await session.execute_read(_read)
 
     async def close(self) -> None:
         await self._driver.close()

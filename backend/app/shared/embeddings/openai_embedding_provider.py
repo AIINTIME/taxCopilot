@@ -16,11 +16,13 @@ class OpenAIEmbeddingProvider:
         settings = get_llm_settings()
         self._client = AsyncOpenAI(api_key=settings.primary_llm_api_key)
         self._model = settings.embedding_model
+        self._dimensions = settings.embedding_dimensions
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         response = await self._client.embeddings.create(
             model=self._model,
             input=texts,
+            dimensions=self._dimensions,
         )
         return [item.embedding for item in response.data]
 

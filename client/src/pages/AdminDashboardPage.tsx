@@ -2,27 +2,18 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
-  CalendarDays,
   FileText,
-  FileUp,
   ShieldCheck,
-  Upload,
   UserCheck,
   Users,
   Zap,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import type { ChangeEvent, DragEvent } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { DocumentUploadZone } from '../components/admin/DocumentUploadZone'
 import { adminApi } from '../services/api/adminApi'
-import type { AdminStats, AdminUserItem } from '../services/api/adminApi'
+import type { AdminStats, AdminUserItem, DocumentListItem } from '../services/api/adminApi'
 import { useAdminAuth } from '../store/useAdminAuth'
-
-const mockRecentDocuments = [
-  { id: 'doc-1', name: 'Finance Act 2025 notes.pdf', type: 'PDF', updated: 'Today' },
-  { id: 'doc-2', name: 'Capital gains circular digest.docx', type: 'DOCX', updated: 'Yesterday' },
-  { id: 'doc-3', name: 'Depreciation rates reference.md', type: 'MD', updated: '12 Jul' },
-]
 
 const mockDocumentCount = 24
 
@@ -31,19 +22,24 @@ export function AdminDashboardPage() {
   const navigate = useNavigate()
   const [stats, setStats] = useState<AdminStats | null>(null)
   const [users, setUsers] = useState<AdminUserItem[]>([])
+  const [documents, setDocuments] = useState<DocumentListItem[]>([])
   const [auditLogs, setAuditLogs] = useState<
     { id: string; userId: string | null; query: string; gateStatus: string; createdAt: string }[]
   >([])
-  const [isDraggingDocument, setIsDraggingDocument] = useState(false)
-  const [selectedDocuments, setSelectedDocuments] = useState<string[]>([])
+
+  const refreshDocuments = useCallback(() => {
+    if (!accessToken) return
+    adminApi.getStats(accessToken).then(setStats).catch(() => undefined)
+    adminApi.listDocuments(accessToken).then(setDocuments).catch(() => undefined)
+  }, [accessToken])
 
   useEffect(() => {
     if (!accessToken) return
 
-    adminApi.getStats(accessToken).then(setStats).catch(() => undefined)
+    refreshDocuments()
     adminApi.getUsers(accessToken).then(setUsers).catch(() => undefined)
     adminApi.getAuditLogs(accessToken).then(setAuditLogs).catch(() => undefined)
-  }, [accessToken])
+  }, [accessToken, refreshDocuments])
 
   const statCards = [
     {
@@ -85,26 +81,6 @@ export function AdminDashboardPage() {
     return `admin-badge ${map[status] ?? ''}`
   }
 
-  function updateSelectedDocuments(files: FileList | null) {
-    if (!files?.length) return
-    setSelectedDocuments(Array.from(files).map((file) => file.name).slice(0, 3))
-  }
-
-  function handleDocumentDragOver(event: DragEvent<HTMLLabelElement>) {
-    event.preventDefault()
-    setIsDraggingDocument(true)
-  }
-
-  function handleDocumentDrop(event: DragEvent<HTMLLabelElement>) {
-    event.preventDefault()
-    setIsDraggingDocument(false)
-    updateSelectedDocuments(event.dataTransfer.files)
-  }
-
-  function handleDocumentPick(event: ChangeEvent<HTMLInputElement>) {
-    updateSelectedDocuments(event.target.files)
-  }
-
   return (
     <div className="admin-dashboard">
       <div className="admin-stats-row">
@@ -134,51 +110,34 @@ export function AdminDashboardPage() {
             </h2>
             <span className="admin-badge admin-badge--green">{mockDocumentCount} documents</span>
           </div>
-          <label
-            className={`admin-upload-area ${isDraggingDocument ? 'is-dragging' : ''}`}
-            onDragOver={handleDocumentDragOver}
-            onDragLeave={() => setIsDraggingDocument(false)}
-            onDrop={handleDocumentDrop}
-          >
-            <input
-              type="file"
-              multiple
-              accept=".pdf,.docx,.txt,.md"
-              onChange={handleDocumentPick}
-            />
-            <span className="admin-upload-area__icon">
-              <FileUp size={26} />
-            </span>
-            <p>Drop documents here</p>
-            <small>PDF, DOCX, TXT, or MD up to 50MB</small>
-            <span className="admin-upload-btn">
-              <Upload size={14} />
-              Browse files
-            </span>
-          </label>
-          {selectedDocuments.length > 0 ? (
-            <div className="admin-selected-docs">
-              {selectedDocuments.map((name) => (
-                <span key={name}>{name}</span>
-              ))}
-            </div>
-          ) : null}
+          {accessToken && <DocumentUploadZone accessToken={accessToken} onUploaded={refreshDocuments} />}
           <p className="admin-card__section-label">Recent Documents</p>
-          <div className="admin-document-list">
-            {mockRecentDocuments.map((doc) => (
-              <div key={doc.id} className="admin-document-item">
-                <span className="admin-document-item__icon">
-                  <FileText size={15} />
-                </span>
-                <div>
-                  <strong>{doc.name}</strong>
-                  <span>
-                    {doc.type} <CalendarDays size={12} /> {doc.updated}
+          {documents.length === 0 ? (
+            <p className="admin-empty">No documents uploaded yet.</p>
+          ) : (
+            <div className="admin-user-list">
+              {documents.slice(0, 5).map((doc) => (
+                <div key={doc.id} className="admin-user-item">
+                  <FileText size={16} style={{ flexShrink: 0, color: '#64748b' }} />
+                  <div>
+                    <strong>{doc.filename}</strong>
+                    <span>{doc.chunks_embedded} chunks · {doc.uploaded_by}</span>
+                  </div>
+                  <span
+                    className={`admin-badge ${
+                      doc.status === 'EMBEDDED'
+                        ? 'admin-badge--green'
+                        : doc.status === 'FAILED'
+                          ? 'admin-badge--red'
+                          : 'admin-badge--yellow'
+                    }`}
+                  >
+                    {doc.status}
                   </span>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="admin-card">

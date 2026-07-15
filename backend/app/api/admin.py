@@ -12,15 +12,27 @@ from app.schemas import (
     AdminStatsResponse,
     AdminUpdateUserRequest,
     AdminUserItem,
+    DocumentListItem,
     DocumentUploadResponse,
     RuleProposalItem,
 )
 from app.services.ingestion.dedup import content_hash
 from app.services.ingestion.kg_graph_extraction.pipeline import process_chunk_for_graph
+from app.services.ingestion.parsing.docx_parser import parse_docx
 from app.services.ingestion.parsing.pdf_parser import chunk_document, parse_pdf
+from app.services.ingestion.parsing.text_parser import parse_text
 from app.services.ingestion.upsert.statutory_kg_upsert import upsert_chunk_to_statutory_kg
 
 router = APIRouter(tags=["admin"])
+
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+PARSERS = {
+    ".pdf": parse_pdf,
+    ".docx": parse_docx,
+    ".txt": parse_text,
+    ".md": parse_text,
+}
 
 
 def serialize_admin_user(user) -> AdminUserItem:
@@ -170,12 +182,21 @@ async def upload_document(
     file: UploadFile,
     admin=Depends(get_current_admin),
 ):
+    safe_name = file.filename or "upload"
+    extension = Path(safe_name).suffix.lower()
+    parser = PARSERS.get(extension)
+    if parser is None:
+        raise HTTPException(status_code=415, detail=f"Unsupported file type: {extension or 'unknown'}")
+
     content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds 50MB limit")
+
     file_hash = content_hash(content)
 
-    # Dedup check — same bytes already ingested
+    # Dedup check — same bytes already successfully ingested
     existing = await prisma.document.find_unique(where={"contentHash": file_hash})
-    if existing:
+    if existing and existing.status == "EMBEDDED":
         return DocumentUploadResponse(
             document_id=existing.id,
             status="SKIPPED_DUPLICATE",
@@ -184,11 +205,15 @@ async def upload_document(
             auto_approved_count=0,
             pending_review_count=0,
         )
+    if existing:
+        # A prior attempt with these exact bytes never finished (FAILED/stuck
+        # PROCESSING) — clear it so this upload can retry cleanly instead of
+        # being silently skipped forever.
+        await prisma.document.delete(where={"id": existing.id})
 
     # Save file locally (s3Path stores the local path for now)
     uploads_dir = Path("uploads")
     uploads_dir.mkdir(exist_ok=True)
-    safe_name = file.filename or "upload"
     file_path = uploads_dir / f"{file_hash}_{safe_name}"
     file_path.write_bytes(content)
 
@@ -205,7 +230,7 @@ async def upload_document(
     )
 
     try:
-        text = parse_pdf(content)
+        text = parser(content)
         chunks = chunk_document(text)
 
         proposals = []
@@ -221,15 +246,22 @@ async def upload_document(
                 tier=10,
             )
 
-            # Graph path — extract rule + (optionally) commit to Neo4j
-            proposal = await process_chunk_for_graph(
-                chunk_text=chunk,
-                chunk_id=chunk_id,
-                document_id=doc.id,
-                org_id=admin.organizationId,
-            )
-            if proposal:
-                proposals.append(proposal)
+            # Graph path — extract rule + (optionally) commit to Neo4j.
+            # Isolated from the vector path: rule extraction depends on the
+            # LLM provider wiring (app/services/rag/llm_client.py), which is
+            # still an unfinished stub. A failure here must not take down the
+            # vector ingestion that already succeeded for this chunk.
+            try:
+                proposal = await process_chunk_for_graph(
+                    chunk_text=chunk,
+                    chunk_id=chunk_id,
+                    document_id=doc.id,
+                    org_id=admin.organizationId,
+                )
+                if proposal:
+                    proposals.append(proposal)
+            except NotImplementedError:
+                pass
 
         await prisma.document.update(
             where={"id": doc.id},
@@ -253,6 +285,27 @@ async def upload_document(
             where={"id": doc.id}, data={"status": "FAILED"}
         )
         raise
+
+
+@router.get("/documents", response_model=list[DocumentListItem])
+async def list_documents(admin=Depends(get_current_admin)):
+    documents = await prisma.document.find_many(
+        where={"organizationId": admin.organizationId},
+        include={"uploadedByAdmin": True},
+        order={"createdAt": "desc"},
+        take=50,
+    )
+    return [
+        DocumentListItem(
+            id=d.id,
+            filename=d.filename,
+            status=d.status.value,
+            chunks_embedded=d.chunksEmbedded,
+            uploaded_by=d.uploadedByAdmin.username if d.uploadedByAdmin else "unknown",
+            created_at=d.createdAt,
+        )
+        for d in documents
+    ]
 
 
 @router.get("/rule-proposals", response_model=list[RuleProposalItem])
