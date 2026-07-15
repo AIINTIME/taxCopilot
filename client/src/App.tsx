@@ -5,6 +5,7 @@ import { AdminLayout } from './components/layout/AdminLayout'
 import { AppLayout } from './components/layout/AppLayout'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { AdminDashboardPage } from './pages/AdminDashboardPage'
+import { AdminDocumentsPage } from './pages/AdminDocumentsPage'
 import { AdminRegisterPage } from './pages/AdminRegisterPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { DeepResearchPage } from './pages/DeepResearchPage'
@@ -33,6 +34,7 @@ export default function App() {
             <Route element={<AdminProtectedRoute />}>
               <Route element={<AdminLayout />}>
                 <Route path="/admin" element={<AdminDashboardPage />} />
+                <Route path="/admin/documents" element={<AdminDocumentsPage />} />
                 <Route path="/admin/*" element={<AdminDashboardPage />} />
               </Route>
             </Route>

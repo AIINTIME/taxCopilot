@@ -2213,6 +2213,36 @@ th {
   background: #1d4ed8;
 }
 
+.admin-upload-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.admin-upload-area.is-dragging {
+  border-color: #2563eb;
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.admin-upload-error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #f87171;
+}
+
+.admin-upload-status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.admin-upload-status-line {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
 /* ── User list ───────────────────────────────────────── */
 .admin-user-list {
   display: flex;
@@ -2551,6 +2581,10 @@ th {
 
 :root:not([data-theme="dark"]) .admin-user-item {
   border-color: #f1f5f9;
+}
+
+:root:not([data-theme="dark"]) .admin-upload-status-line {
+  color: #475569;
 }
 
 :root:not([data-theme="dark"]) .admin-role-item {

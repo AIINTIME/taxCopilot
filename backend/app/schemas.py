@@ -97,6 +97,15 @@ class DocumentUploadResponse(BaseModel):
     pending_review_count: int
 
 
+class DocumentListItem(BaseModel):
+    id: str
+    filename: str
+    status: str
+    chunks_embedded: int
+    uploaded_by: str
+    created_at: datetime
+
+
 class RuleProposalItem(BaseModel):
     id: str
     document_id: str

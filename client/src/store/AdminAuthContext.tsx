@@ -21,6 +21,10 @@ export function AdminAuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
+    adminApi.onTokenChange((token) => setAccessToken(token))
+  }, [])
+
+  useEffect(() => {
     let isMounted = true
 
     adminApi

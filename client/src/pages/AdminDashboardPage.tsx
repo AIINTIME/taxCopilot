@@ -4,31 +4,33 @@ import {
   ArrowRight,
   FileText,
   ShieldCheck,
-  Upload,
   UserCheck,
   Users,
   Zap,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { DocumentUploadZone } from '../components/admin/DocumentUploadZone'
 import { adminApi } from '../services/api/adminApi'
-import type { AdminStats, AdminUserItem } from '../services/api/adminApi'
-import { useAdminAuth } from '../store/useAdminAuth'
+import type { AdminStats, AdminUserItem, DocumentListItem } from '../services/api/adminApi'
 
 export function AdminDashboardPage() {
-  const { accessToken } = useAdminAuth()
   const [stats, setStats] = useState<AdminStats | null>(null)
   const [users, setUsers] = useState<AdminUserItem[]>([])
+  const [documents, setDocuments] = useState<DocumentListItem[]>([])
   const [auditLogs, setAuditLogs] = useState<
     { id: string; userId: string | null; query: string; gateStatus: string; createdAt: string }[]
   >([])
 
-  useEffect(() => {
-    if (!accessToken) return
+  const refreshDocuments = useCallback(() => {
+    adminApi.getStats().then(setStats).catch(() => undefined)
+    adminApi.listDocuments().then(setDocuments).catch(() => undefined)
+  }, [])
 
-    adminApi.getStats(accessToken).then(setStats).catch(() => undefined)
-    adminApi.getUsers(accessToken).then(setUsers).catch(() => undefined)
-    adminApi.getAuditLogs(accessToken).then(setAuditLogs).catch(() => undefined)
-  }, [accessToken])
+  useEffect(() => {
+    refreshDocuments()
+    adminApi.getUsers().then(setUsers).catch(() => undefined)
+    adminApi.getAuditLogs().then(setAuditLogs).catch(() => undefined)
+  }, [refreshDocuments])
 
   const statCards = [
     {
@@ -101,20 +103,33 @@ export function AdminDashboardPage() {
               View all <ArrowRight size={13} />
             </button>
           </div>
-          <div className="admin-upload-area">
-            <Upload size={28} />
-            <p>Drag and drop a file here, or click to browse</p>
-            <small>Supports PDF, DOCX, TXT, MD (Max 50MB)</small>
-            <button type="button" className="admin-upload-btn">
-              <Upload size={14} />
-              Upload Document
-            </button>
-          </div>
+          <DocumentUploadZone onUploaded={refreshDocuments} />
           <p className="admin-card__section-label">Recent Documents</p>
-          {stats?.total_provisions === 0 || !stats ? (
+          {documents.length === 0 ? (
             <p className="admin-empty">No documents uploaded yet.</p>
           ) : (
-            <p className="admin-empty">{stats.total_provisions} provision(s) in knowledge graph.</p>
+            <div className="admin-user-list">
+              {documents.slice(0, 5).map((doc) => (
+                <div key={doc.id} className="admin-user-item">
+                  <FileText size={16} style={{ flexShrink: 0, color: '#64748b' }} />
+                  <div>
+                    <strong>{doc.filename}</strong>
+                    <span>{doc.chunks_embedded} chunks · {doc.uploaded_by}</span>
+                  </div>
+                  <span
+                    className={`admin-badge ${
+                      doc.status === 'EMBEDDED'
+                        ? 'admin-badge--green'
+                        : doc.status === 'FAILED'
+                          ? 'admin-badge--red'
+                          : 'admin-badge--yellow'
+                    }`}
+                  >
+                    {doc.status}
+                  </span>
+                </div>
+              ))}
+            </div>
           )}
         </div>
 
