@@ -46,7 +46,28 @@ class AdminUserItem(BaseModel):
     name: str
     email: str
     organization_id: str | None = None
+    admin_id: str | None = None
+    is_active: bool = True
     created_at: datetime
+
+
+class AdminCreateUserRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+
+
+class AdminUpdateUserRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=120)
+    email: EmailStr | None = None
+
+
+class AdminSetUserPasswordRequest(BaseModel):
+    password: str = Field(min_length=8, max_length=128)
+
+
+class AdminSetUserActiveRequest(BaseModel):
+    is_active: bool
 
 
 class RegisterRequest(BaseModel):
@@ -69,6 +90,7 @@ class UserResponse(BaseModel):
     bio: str | None = None
     profile_photo_url: str | None = None
     organization_id: str | None = None
+    is_active: bool = True
     created_at: datetime
 
 

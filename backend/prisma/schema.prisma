@@ -40,6 +40,7 @@ model User {
   bio             String?
   profilePhotoUrl String?
   passwordHash    String
+  isActive        Boolean       @default(true)
   adminId         String?
   admin           Admin?        @relation(fields: [adminId], references: [id], onDelete: SetNull)
   organizationId  String?

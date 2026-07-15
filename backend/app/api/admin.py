@@ -1,11 +1,16 @@
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 
 from app.api.admin_auth import get_current_admin
+from app.core.security import hash_password
 from app.db import prisma
 from app.schemas import (
+    AdminCreateUserRequest,
+    AdminSetUserActiveRequest,
+    AdminSetUserPasswordRequest,
     AdminStatsResponse,
+    AdminUpdateUserRequest,
     AdminUserItem,
     DocumentUploadResponse,
     RuleProposalItem,
@@ -18,9 +23,34 @@ from app.services.ingestion.upsert.statutory_kg_upsert import upsert_chunk_to_st
 router = APIRouter(tags=["admin"])
 
 
+def serialize_admin_user(user) -> AdminUserItem:
+    return AdminUserItem(
+        id=user.id,
+        name=user.name,
+        email=user.email,
+        organization_id=user.organizationId,
+        admin_id=user.adminId,
+        is_active=user.isActive,
+        created_at=user.createdAt,
+    )
+
+
+async def get_user_for_admin(user_id: str, admin):
+    user = await prisma.user.find_first(
+        where={"id": user_id, "organizationId": admin.organizationId}
+    )
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+    return user
+
+
 @router.get("/stats", response_model=AdminStatsResponse)
-async def get_stats(_admin=Depends(get_current_admin)):
-    total_users = await prisma.user.count()
+async def get_stats(admin=Depends(get_current_admin)):
+    total_users = await prisma.user.count(
+        where={"organizationId": admin.organizationId}
+    )
     total_audit_logs = await prisma.auditlog.count()
     total_provisions = await prisma.knowledgegraphprovision.count()
     return AdminStatsResponse(
@@ -32,18 +62,92 @@ async def get_stats(_admin=Depends(get_current_admin)):
 
 
 @router.get("/users", response_model=list[AdminUserItem])
-async def get_users(_admin=Depends(get_current_admin)):
-    users = await prisma.user.find_many(order={"createdAt": "desc"}, take=50)
-    return [
-        AdminUserItem(
-            id=u.id,
-            name=u.name,
-            email=u.email,
-            organization_id=u.organizationId,
-            created_at=u.createdAt,
+async def get_users(admin=Depends(get_current_admin)):
+    users = await prisma.user.find_many(
+        where={"organizationId": admin.organizationId},
+        order={"createdAt": "desc"},
+        take=50,
+    )
+    return [serialize_admin_user(u) for u in users]
+
+
+@router.post(
+    "/users", response_model=AdminUserItem, status_code=status.HTTP_201_CREATED
+)
+async def create_user(
+    payload: AdminCreateUserRequest, admin=Depends(get_current_admin)
+):
+    normalized_email = payload.email.lower().strip()
+    existing_user = await prisma.user.find_unique(where={"email": normalized_email})
+    if existing_user is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Email is already registered"
         )
-        for u in users
-    ]
+
+    user = await prisma.user.create(
+        data={
+            "email": normalized_email,
+            "name": payload.name.strip(),
+            "passwordHash": hash_password(payload.password),
+            "organizationId": admin.organizationId,
+            "adminId": admin.id,
+        }
+    )
+    return serialize_admin_user(user)
+
+
+@router.patch("/users/{user_id}", response_model=AdminUserItem)
+async def update_user(
+    user_id: str, payload: AdminUpdateUserRequest, admin=Depends(get_current_admin)
+):
+    await get_user_for_admin(user_id, admin)
+    data: dict[str, str] = {}
+
+    if payload.name is not None:
+        data["name"] = payload.name.strip()
+
+    if payload.email is not None:
+        normalized_email = payload.email.lower().strip()
+        existing_user = await prisma.user.find_unique(where={"email": normalized_email})
+        if existing_user is not None and existing_user.id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email is already registered",
+            )
+        data["email"] = normalized_email
+
+    if not data:
+        return serialize_admin_user(await get_user_for_admin(user_id, admin))
+
+    user = await prisma.user.update(where={"id": user_id}, data=data)
+    return serialize_admin_user(user)
+
+
+@router.patch("/users/{user_id}/password", status_code=status.HTTP_204_NO_CONTENT)
+async def set_user_password(
+    user_id: str,
+    payload: AdminSetUserPasswordRequest,
+    admin=Depends(get_current_admin),
+):
+    await get_user_for_admin(user_id, admin)
+    await prisma.user.update(
+        where={"id": user_id},
+        data={"passwordHash": hash_password(payload.password)},
+    )
+
+
+@router.patch("/users/{user_id}/status", response_model=AdminUserItem)
+async def set_user_status(
+    user_id: str,
+    payload: AdminSetUserActiveRequest,
+    admin=Depends(get_current_admin),
+):
+    await get_user_for_admin(user_id, admin)
+    user = await prisma.user.update(
+        where={"id": user_id},
+        data={"isActive": payload.is_active},
+    )
+    return serialize_admin_user(user)
 
 
 @router.get("/audit-logs")

@@ -49,6 +49,7 @@ def serialize_user(user) -> UserResponse:
         bio=user.bio,
         profile_photo_url=user.profilePhotoUrl,
         organization_id=user.organizationId,
+        is_active=user.isActive,
         created_at=user.createdAt,
     )
 
@@ -113,6 +114,10 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found"
         )
+    if not user.isActive:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="User account is deactivated"
+        )
     return user
 
 
@@ -167,6 +172,7 @@ async def login(
         user is None
         or not verify_password(payload.password, user.passwordHash)
         or (user.organizationId is not None and user.organizationId != payload.organization_id)
+        or not user.isActive
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email, password, or organization"
@@ -220,6 +226,11 @@ async def refresh(
         clear_refresh_cookie(response, settings)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found"
+        )
+    if not user.isActive:
+        clear_refresh_cookie(response, settings)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="User account is deactivated"
         )
 
     access_token = await issue_tokens(user.id, response, redis, settings)
