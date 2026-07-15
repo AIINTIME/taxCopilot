@@ -12,8 +12,10 @@ import { useCallback, useEffect, useState } from 'react'
 import { DocumentUploadZone } from '../components/admin/DocumentUploadZone'
 import { adminApi } from '../services/api/adminApi'
 import type { AdminStats, AdminUserItem, DocumentListItem } from '../services/api/adminApi'
+import { useAdminAuth } from '../store/useAdminAuth'
 
 export function AdminDashboardPage() {
+  const { accessToken } = useAdminAuth()
   const [stats, setStats] = useState<AdminStats | null>(null)
   const [users, setUsers] = useState<AdminUserItem[]>([])
   const [documents, setDocuments] = useState<DocumentListItem[]>([])
@@ -22,15 +24,18 @@ export function AdminDashboardPage() {
   >([])
 
   const refreshDocuments = useCallback(() => {
-    adminApi.getStats().then(setStats).catch(() => undefined)
-    adminApi.listDocuments().then(setDocuments).catch(() => undefined)
-  }, [])
+    if (!accessToken) return
+    adminApi.getStats(accessToken).then(setStats).catch(() => undefined)
+    adminApi.listDocuments(accessToken).then(setDocuments).catch(() => undefined)
+  }, [accessToken])
 
   useEffect(() => {
+    if (!accessToken) return
+
     refreshDocuments()
-    adminApi.getUsers().then(setUsers).catch(() => undefined)
-    adminApi.getAuditLogs().then(setAuditLogs).catch(() => undefined)
-  }, [refreshDocuments])
+    adminApi.getUsers(accessToken).then(setUsers).catch(() => undefined)
+    adminApi.getAuditLogs(accessToken).then(setAuditLogs).catch(() => undefined)
+  }, [accessToken, refreshDocuments])
 
   const statCards = [
     {
@@ -103,7 +108,7 @@ export function AdminDashboardPage() {
               View all <ArrowRight size={13} />
             </button>
           </div>
-          <DocumentUploadZone onUploaded={refreshDocuments} />
+          {accessToken && <DocumentUploadZone accessToken={accessToken} onUploaded={refreshDocuments} />}
           <p className="admin-card__section-label">Recent Documents</p>
           {documents.length === 0 ? (
             <p className="admin-empty">No documents uploaded yet.</p>

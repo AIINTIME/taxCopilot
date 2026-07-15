@@ -45,27 +45,7 @@ export type DocumentListItem = {
   created_at: string
 }
 
-// ── Token store ───────────────────────────────────────────────────────────
-// Authenticated methods read the token from here instead of taking it as a
-// parameter, so a silent refresh triggered deep inside request() (on a 401)
-// is immediately usable by the next call without every caller re-plumbing it.
-let currentAccessToken: string | null = null
-let tokenListener: ((token: string | null) => void) | null = null
-
-function setAccessToken(token: string | null) {
-  currentAccessToken = token
-  tokenListener?.(token)
-}
-
-function onTokenChange(listener: (token: string | null) => void) {
-  tokenListener = listener
-}
-
-function authHeaders(): Record<string, string> {
-  return currentAccessToken ? { Authorization: `Bearer ${currentAccessToken}` } : {}
-}
-
-async function request<T>(path: string, options: RequestInit = {}, isRetry = false): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}) {
   const isFormData = options.body instanceof FormData
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -76,17 +56,6 @@ async function request<T>(path: string, options: RequestInit = {}, isRetry = fal
       ...options.headers,
     },
   })
-
-  if (response.status === 401 && !isRetry && path !== '/admin/auth/refresh') {
-    try {
-      const refreshed = await request<AdminAuthResponse>('/admin/auth/refresh', { method: 'POST' }, true)
-      setAccessToken(refreshed.access_token)
-      return request<T>(path, { ...options, headers: { ...options.headers, ...authHeaders() } }, true)
-    } catch {
-      setAccessToken(null)
-      // Fall through to the original 401 handling below.
-    }
-  }
 
   if (!response.ok) {
     const body = await response.json().catch(() => null)
@@ -99,58 +68,58 @@ async function request<T>(path: string, options: RequestInit = {}, isRetry = fal
 }
 
 export const adminApi = {
-  onTokenChange,
-  async login(payload: { username: string; password: string; organization_id: string }) {
-    const response = await request<AdminAuthResponse>('/admin/auth/login', {
+  login(payload: { username: string; password: string; organization_id: string }) {
+    return request<AdminAuthResponse>('/admin/auth/login', {
       method: 'POST',
       body: JSON.stringify(payload),
     })
-    setAccessToken(response.access_token)
-    return response
   },
-  async register(payload: { username: string; password: string; organization_id: string }) {
-    const response = await request<AdminAuthResponse>('/admin/auth/register', {
+  register(payload: { username: string; password: string; organization_id: string }) {
+    return request<AdminAuthResponse>('/admin/auth/register', {
       method: 'POST',
       body: JSON.stringify(payload),
     })
-    setAccessToken(response.access_token)
-    return response
   },
-  async refresh() {
-    const response = await request<AdminAuthResponse>('/admin/auth/refresh', { method: 'POST' })
-    setAccessToken(response.access_token)
-    return response
+  refresh() {
+    return request<AdminAuthResponse>('/admin/auth/refresh', { method: 'POST' })
   },
-  me() {
-    return request<AdminUser>('/admin/auth/me', { headers: authHeaders() })
+  me(accessToken: string) {
+    return request<AdminUser>('/admin/auth/me', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
   },
-  async logout() {
-    await request<void>('/admin/auth/logout', { method: 'POST' })
-    setAccessToken(null)
+  logout() {
+    return request<void>('/admin/auth/logout', { method: 'POST' })
   },
-  getStats() {
-    return request<AdminStats>('/admin/stats', { headers: authHeaders() })
+  getStats(accessToken: string) {
+    return request<AdminStats>('/admin/stats', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
   },
-  getUsers() {
-    return request<AdminUserItem[]>('/admin/users', { headers: authHeaders() })
+  getUsers(accessToken: string) {
+    return request<AdminUserItem[]>('/admin/users', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
   },
-  getAuditLogs() {
+  getAuditLogs(accessToken: string) {
     return request<{ id: string; userId: string | null; query: string; gateStatus: string; createdAt: string }[]>(
       '/admin/audit-logs',
-      { headers: authHeaders() },
+      { headers: { Authorization: `Bearer ${accessToken}` } },
     )
   },
-  uploadDocument(file: File) {
+  uploadDocument(accessToken: string, file: File) {
     const formData = new FormData()
     formData.append('file', file)
 
     return request<DocumentUploadResponse>('/admin/documents/upload', {
       method: 'POST',
       body: formData,
-      headers: authHeaders(),
+      headers: { Authorization: `Bearer ${accessToken}` },
     })
   },
-  listDocuments() {
-    return request<DocumentListItem[]>('/admin/documents', { headers: authHeaders() })
+  listDocuments(accessToken: string) {
+    return request<DocumentListItem[]>('/admin/documents', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
   },
 }

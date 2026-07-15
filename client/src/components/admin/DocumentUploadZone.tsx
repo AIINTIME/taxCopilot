@@ -12,6 +12,7 @@ type QueueItem = {
 }
 
 type DocumentUploadZoneProps = {
+  accessToken: string
   onUploaded: () => void
 }
 
@@ -30,7 +31,7 @@ function validate(file: File): string | null {
   return null
 }
 
-export function DocumentUploadZone({ onUploaded }: DocumentUploadZoneProps) {
+export function DocumentUploadZone({ accessToken, onUploaded }: DocumentUploadZoneProps) {
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [isDragging, setIsDragging] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -53,7 +54,7 @@ export function DocumentUploadZone({ onUploaded }: DocumentUploadZoneProps) {
       }
 
       try {
-        await adminApi.uploadDocument(file)
+        await adminApi.uploadDocument(accessToken, file)
         updateAt(i, { status: 'done' })
       } catch (err) {
         updateAt(i, { status: 'error', error: err instanceof Error ? err.message : 'Upload failed' })

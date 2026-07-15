@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { DocumentUploadZone } from '../components/admin/DocumentUploadZone'
 import { adminApi } from '../services/api/adminApi'
 import type { DocumentListItem } from '../services/api/adminApi'
+import { useAdminAuth } from '../store/useAdminAuth'
 
 function statusBadgeClass(status: DocumentListItem['status']) {
   if (status === 'EMBEDDED') return 'admin-badge admin-badge--green'
@@ -11,11 +12,13 @@ function statusBadgeClass(status: DocumentListItem['status']) {
 }
 
 export function AdminDocumentsPage() {
+  const { accessToken } = useAdminAuth()
   const [documents, setDocuments] = useState<DocumentListItem[]>([])
 
   const refresh = useCallback(() => {
-    adminApi.listDocuments().then(setDocuments).catch(() => undefined)
-  }, [])
+    if (!accessToken) return
+    adminApi.listDocuments(accessToken).then(setDocuments).catch(() => undefined)
+  }, [accessToken])
 
   useEffect(() => {
     refresh()
@@ -30,7 +33,7 @@ export function AdminDocumentsPage() {
             Upload Document
           </h2>
         </div>
-        <DocumentUploadZone onUploaded={refresh} />
+        {accessToken && <DocumentUploadZone accessToken={accessToken} onUploaded={refresh} />}
       </div>
 
       <div className="admin-card">
