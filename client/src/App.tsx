@@ -6,6 +6,15 @@ import { AppLayout } from './components/layout/AppLayout'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { AdminDashboardPage } from './pages/AdminDashboardPage'
 import { AdminRegisterPage } from './pages/AdminRegisterPage'
+import {
+  AdminAuditLogsPage,
+  AdminDocumentsPage,
+  AdminRolesPage,
+  AdminSecurityPage,
+  AdminSettingsPage,
+  AdminTokenUsagePage,
+} from './pages/AdminStaticPages'
+import { AdminUsersPage } from './pages/AdminUsersPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { DeepResearchPage } from './pages/DeepResearchPage'
 import { ItActComparisonPage } from './pages/ItActComparisonPage'
@@ -33,7 +42,14 @@ export default function App() {
             <Route element={<AdminProtectedRoute />}>
               <Route element={<AdminLayout />}>
                 <Route path="/admin" element={<AdminDashboardPage />} />
-                <Route path="/admin/*" element={<AdminDashboardPage />} />
+                <Route path="/admin/documents" element={<AdminDocumentsPage />} />
+                <Route path="/admin/users" element={<AdminUsersPage />} />
+                <Route path="/admin/roles" element={<AdminRolesPage />} />
+                <Route path="/admin/audit-logs" element={<AdminAuditLogsPage />} />
+                <Route path="/admin/token-usage" element={<AdminTokenUsagePage />} />
+                <Route path="/admin/security" element={<AdminSecurityPage />} />
+                <Route path="/admin/settings" element={<AdminSettingsPage />} />
+                <Route path="/admin/*" element={<Navigate to="/admin" replace />} />
               </Route>
             </Route>
             <Route element={<ProtectedRoute />}>

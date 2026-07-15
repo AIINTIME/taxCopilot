@@ -24,6 +24,9 @@ export type AdminUserItem = {
   id: string
   name: string
   email: string
+  organization_id: string | null
+  admin_id: string | null
+  is_active: boolean
   created_at: string
 }
 
@@ -79,6 +82,41 @@ export const adminApi = {
   getUsers(accessToken: string) {
     return request<AdminUserItem[]>('/admin/users', {
       headers: { Authorization: `Bearer ${accessToken}` },
+    })
+  },
+  createUser(
+    accessToken: string,
+    payload: { name: string; email: string; password: string },
+  ) {
+    return request<AdminUserItem>('/admin/users', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(payload),
+    })
+  },
+  updateUser(
+    accessToken: string,
+    userId: string,
+    payload: { name?: string; email?: string },
+  ) {
+    return request<AdminUserItem>(`/admin/users/${userId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(payload),
+    })
+  },
+  setUserPassword(accessToken: string, userId: string, password: string) {
+    return request<void>(`/admin/users/${userId}/password`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ password }),
+    })
+  },
+  setUserStatus(accessToken: string, userId: string, isActive: boolean) {
+    return request<AdminUserItem>(`/admin/users/${userId}/status`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ is_active: isActive }),
     })
   },
   getAuditLogs(accessToken: string) {

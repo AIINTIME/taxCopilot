@@ -190,7 +190,8 @@ export function LoginPage() {
           {tab === 'user' ? (
             <>New to TaxAI? <Link to="/register">Create an account</Link></>
           ) : (
-            <>New admin? <Link to="/admin/register">Create admin account</Link></>
+            <>Continue to admin panel</>
+            // <>New admin? <Link to="/admin/register">Create admin account</Link></>
           )}
         </p>
       </section>

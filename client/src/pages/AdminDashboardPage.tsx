@@ -2,7 +2,9 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
+  CalendarDays,
   FileText,
+  FileUp,
   ShieldCheck,
   Upload,
   UserCheck,
@@ -10,17 +12,30 @@ import {
   Zap,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import type { ChangeEvent, DragEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { adminApi } from '../services/api/adminApi'
 import type { AdminStats, AdminUserItem } from '../services/api/adminApi'
 import { useAdminAuth } from '../store/useAdminAuth'
 
+const mockRecentDocuments = [
+  { id: 'doc-1', name: 'Finance Act 2025 notes.pdf', type: 'PDF', updated: 'Today' },
+  { id: 'doc-2', name: 'Capital gains circular digest.docx', type: 'DOCX', updated: 'Yesterday' },
+  { id: 'doc-3', name: 'Depreciation rates reference.md', type: 'MD', updated: '12 Jul' },
+]
+
+const mockDocumentCount = 24
+
 export function AdminDashboardPage() {
   const { accessToken } = useAdminAuth()
+  const navigate = useNavigate()
   const [stats, setStats] = useState<AdminStats | null>(null)
   const [users, setUsers] = useState<AdminUserItem[]>([])
   const [auditLogs, setAuditLogs] = useState<
     { id: string; userId: string | null; query: string; gateStatus: string; createdAt: string }[]
   >([])
+  const [isDraggingDocument, setIsDraggingDocument] = useState(false)
+  const [selectedDocuments, setSelectedDocuments] = useState<string[]>([])
 
   useEffect(() => {
     if (!accessToken) return
@@ -70,6 +85,26 @@ export function AdminDashboardPage() {
     return `admin-badge ${map[status] ?? ''}`
   }
 
+  function updateSelectedDocuments(files: FileList | null) {
+    if (!files?.length) return
+    setSelectedDocuments(Array.from(files).map((file) => file.name).slice(0, 3))
+  }
+
+  function handleDocumentDragOver(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault()
+    setIsDraggingDocument(true)
+  }
+
+  function handleDocumentDrop(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault()
+    setIsDraggingDocument(false)
+    updateSelectedDocuments(event.dataTransfer.files)
+  }
+
+  function handleDocumentPick(event: ChangeEvent<HTMLInputElement>) {
+    updateSelectedDocuments(event.target.files)
+  }
+
   return (
     <div className="admin-dashboard">
       <div className="admin-stats-row">
@@ -97,25 +132,53 @@ export function AdminDashboardPage() {
               <FileText size={16} />
               Document Management
             </h2>
-            <button type="button" className="admin-view-all">
-              View all <ArrowRight size={13} />
-            </button>
+            <span className="admin-badge admin-badge--green">{mockDocumentCount} documents</span>
           </div>
-          <div className="admin-upload-area">
-            <Upload size={28} />
-            <p>Drag and drop a file here, or click to browse</p>
-            <small>Supports PDF, DOCX, TXT, MD (Max 50MB)</small>
-            <button type="button" className="admin-upload-btn">
+          <label
+            className={`admin-upload-area ${isDraggingDocument ? 'is-dragging' : ''}`}
+            onDragOver={handleDocumentDragOver}
+            onDragLeave={() => setIsDraggingDocument(false)}
+            onDrop={handleDocumentDrop}
+          >
+            <input
+              type="file"
+              multiple
+              accept=".pdf,.docx,.txt,.md"
+              onChange={handleDocumentPick}
+            />
+            <span className="admin-upload-area__icon">
+              <FileUp size={26} />
+            </span>
+            <p>Drop documents here</p>
+            <small>PDF, DOCX, TXT, or MD up to 50MB</small>
+            <span className="admin-upload-btn">
               <Upload size={14} />
-              Upload Document
-            </button>
-          </div>
+              Browse files
+            </span>
+          </label>
+          {selectedDocuments.length > 0 ? (
+            <div className="admin-selected-docs">
+              {selectedDocuments.map((name) => (
+                <span key={name}>{name}</span>
+              ))}
+            </div>
+          ) : null}
           <p className="admin-card__section-label">Recent Documents</p>
-          {stats?.total_provisions === 0 || !stats ? (
-            <p className="admin-empty">No documents uploaded yet.</p>
-          ) : (
-            <p className="admin-empty">{stats.total_provisions} provision(s) in knowledge graph.</p>
-          )}
+          <div className="admin-document-list">
+            {mockRecentDocuments.map((doc) => (
+              <div key={doc.id} className="admin-document-item">
+                <span className="admin-document-item__icon">
+                  <FileText size={15} />
+                </span>
+                <div>
+                  <strong>{doc.name}</strong>
+                  <span>
+                    {doc.type} <CalendarDays size={12} /> {doc.updated}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
         <div className="admin-card">
@@ -124,20 +187,18 @@ export function AdminDashboardPage() {
               <Users size={16} />
               User Management
             </h2>
-            <button type="button" className="admin-view-all">
-              View all <ArrowRight size={13} />
-            </button>
+            <span className="admin-badge admin-badge--blue">{users.length} users</span>
           </div>
           <div className="admin-user-list">
             {users.length === 0 ? (
               <p className="admin-empty">No users registered yet.</p>
             ) : (
-              users.slice(0, 5).map((user) => (
+              users.slice(0, 3).map((user) => (
                 <div key={user.id} className="admin-user-item">
                   <div className="admin-avatar admin-avatar--xs">
                     {user.name[0]?.toUpperCase()}
                   </div>
-                  <div>
+                  <div className="admin-user-item__content">
                     <strong>{user.name}</strong>
                     <span>{user.email}</span>
                   </div>
@@ -146,11 +207,9 @@ export function AdminDashboardPage() {
               ))
             )}
           </div>
-          {users.length > 0 && (
-            <button type="button" className="admin-manage-link">
-              Manage users <ArrowRight size={13} />
-            </button>
-          )}
+          <button type="button" className="admin-manage-link" onClick={() => navigate('/admin/users')}>
+            View all users <ArrowRight size={13} />
+          </button>
         </div>
       </div>
 
