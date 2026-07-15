@@ -23,7 +23,23 @@ class QueryGraphState(TypedDict, total=False):
     explicit_as_of_date: date | None
     intent: Intent
     as_of: TaxYearContext
+
+    # Deterministically extracted computation inputs. `missing` non-empty means
+    # a required fact was absent and the graph must ask rather than guess --
+    # computing exactly on an invented input is the worst outcome available.
+    extracted_inputs: dict[str, Any]
+    assumptions: list[str]
+    missing: list[str]
+    clarification: str | None
+
     computation_result: dict[str, Any] | None
+    computation_trace: dict[str, Any] | None
+
+    # Sections the computation trace cited that the rule graph could not
+    # resolve to a source. Surfaced on the response so an answer with no
+    # citations is visibly uncited rather than silently so.
+    uncited_sections: list[str]
+
     retrieved_chunks: list[dict[str, Any]]
     llm_response: dict[str, Any] | None
     gated_citations: list[Citation]
