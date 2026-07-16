@@ -41,7 +41,23 @@ class QueryGraphState(TypedDict, total=False):
     # ever reach `computation_request`'s inputs.
     extracted_inputs: dict[str, Any]
     extraction_missing_fields: list[str]
+    # Deterministically (regex-based) extracted computation inputs from the
+    # query text itself, e.g. "my salary is 21 lakhs" -> {"gross_income":
+    # 2100000, ...} (services.query.input_extractor). Distinct from
+    # `extracted_inputs` above, which comes from an uploaded document via an
+    # LLM, not the query text via regex. `assumptions` surfaces what was
+    # inferred (e.g. an unstated income type defaulted to salaried) so the
+    # narration/response can disclose it rather than silently assume it.
+    parsed_query_inputs: dict[str, Any]
+    assumptions: list[str]
     computation_result: dict[str, Any] | None
+
+    # Sections the computation trace cited that the rule graph could not
+    # resolve to a source (orchestration.nodes.computation_citations).
+    # Surfaced on the response so an answer with no citations is visibly
+    # uncited rather than silently so.
+    uncited_sections: list[str]
+
     retrieved_chunks: list[dict[str, Any]]
     # Structured rate rules read from the Neo4j graph DB
     # (services.rag.retriever.graph_store) for the ground-truth check.

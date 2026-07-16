@@ -53,6 +53,16 @@ extractive `summary`, and verified citations into one JSON response, and an
 insert-only `AuditLog` row is written before the response goes back to the
 user.
 
+**ITR return analysis** (`services/analysis/`) — a separate, reverse-direction
+capability alongside the query pipeline: instead of "what would I owe",
+`POST /api/v1/personal-tax/analyze-return` takes a filed return, recomputes it
+from its own declared figures using the same personal-tax rules the query
+pipeline uses, diffs the result against what was actually filed, and returns
+the discrepancies (each tagged with the source line it came from) plus a
+deterministic accuracy/risk score. No LLM decides whether a return is wrong,
+picks a penalty, or computes the score — only arithmetic and (for penalties,
+currently returning none pending graph coverage) a Neo4j lookup.
+
 **Ingestion pipeline** — runs independently (on a schedule, or triggered by a
 user upload). External statutory sources are scraped/pulled and user
 documents (P&L, GSTR, balance sheets) are uploaded, both get parsed and
@@ -372,25 +382,53 @@ Same isolation pattern as `shared/llm/`, one per external service:
 - `routes.py` — `POST /api/v1/{domain}/query`, e.g.
   `domain="corporate-tax"`. `QueryRequest` also carries an optional
   `computation_inputs: dict[str, Any] | None` field (see the note in §1).
-- `intent_classifier.py` — **implemented**, regex/keyword-based
-  `Intent.COMPUTATION | RETRIEVAL | BOTH`. Routes each query without ever
-  calling an LLM — this is a control-flow decision, and the LLM never makes
-  control-flow decisions in this system.
-- `temporal_resolver.py` — **implemented.** Parses an explicit date out of
-  the query (`AY 2025-26`, `FY 2024-25`, or a raw date) or falls back to
-  today, derives the Assessment Year, and branches `regime` /
-  `capital_gains_period` on the two pivot dates.
+- `intent_classifier.py` — **implemented**: a regex fast-path for the
+  clearest phrasings, falling back to an embedding-based k-NN classifier
+  (cosine similarity against curated labeled examples in
+  `intent_examples.py`, rank-weighted voting) for anything ambiguous.
+  Deterministic and reproducible either way — this is a control-flow
+  decision, and the LLM never makes control-flow decisions in this system.
+- `input_extractor.py` — **implemented.** Deterministic (regex, never an
+  LLM) extraction of personal-tax computation inputs straight out of a
+  query's text, e.g. "my salary is 21 lakhs, I have 80C of 1.5L" ->
+  `{gross_income: 2100000, deductions: {section_80c: 150000}}`. Handles
+  Indian numeral notation (lakh/crore/lpa/k), binds each amount to the
+  nearest income/section label rather than just taking the largest number,
+  and reports `missing`/`assumptions` so the graph can ask a clarifying
+  question instead of guessing. `states_income()` is also used by
+  `query_graph.py`'s rule-name inference to recognize a personal-tax
+  computation query, and is exported for `intent_classifier.py`'s "what is
+  my payable tax" vs "what is HRA" disambiguation (not currently wired
+  into the kept classifier, but available).
+- `temporal_resolver.py` — **implemented.** Parses an explicit date, or an
+  AY/FY mention (`AY 2025-26`, `FY 2024-25`), out of the query; if neither
+  is present, defaults to the **most recently completed FY** (the one a
+  taxpayer would currently be filing for) rather than today's wall-clock
+  date — a query asked in July 2026 about "my tax" concerns FY 2025-26
+  (ended 31 Mar 2026), not whatever regime happens to govern today. Every
+  code path that resolves a year without an exact date anchors to that
+  year's **start** (1 Apr), consistently: FY 2024-25 straddles the
+  23-Jul-2024 capital-gains rate change, so the start/end choice actually
+  changes which side of that pivot the year resolves to.
 
 ### `app/services/computation/` — the deterministic rules engine (**fully implemented**)
 
 Zero I/O, as designed: nothing under `rules/` (or `engine.py`) imports the
 database, an LLM client, or an HTTP client — the caller (the orchestration
 layer) passes in plain values via `computation_inputs`.
-- `engine.py` — **implemented.** `compute(rule_name, inputs, as_of)` looks up
-  the rule, coerces raw JSON-shaped values (strings, ISO date strings) into
-  the rule's `Decimal`/`date` dataclass fields, and raises
-  `MissingComputationInputError` (naming exactly which fields are absent) if
-  a required input wasn't supplied — it never defaults a missing figure to 0.
+- `engine.py` — **implemented**, with two dispatch mechanisms side by side.
+  Most rules use reflection (`_INPUT_TYPES` + generic `_build_input`):
+  `compute(rule_name, inputs, as_of)` coerces raw JSON-shaped values (strings,
+  ISO date strings) into the rule's `Decimal`/`date` dataclass fields via
+  `dataclasses.fields()`, and raises `MissingComputationInputError` (naming
+  exactly which fields are absent) if a required input wasn't supplied — it
+  never defaults a missing figure to 0. A rule whose input shape reflection
+  can't handle generically (a nested dataclass, an enum field) instead
+  registers a `RuleSpec` in `_SPECS` with explicit `build_input`/`to_outputs`/
+  `to_steps` functions; `compute()` tries `_SPECS` first, falling back to the
+  reflection path. `personal_regime_comparison` (below) is the one rule that
+  needs this today, because `PersonalRegimeInput` nests a `DeductionInputs`
+  dataclass and an `IncomeType` enum.
 - `rules/mat.py`, `rules/amt.py`, `rules/regime_comparison.py`,
   `rules/depreciation.py`, `rules/capital_gains.py`,
   `rules/capital_gains_exemptions.py` — **implemented**, real `Decimal` math
@@ -405,7 +443,19 @@ layer) passes in plain values via `computation_inputs`.
   domain-expert verification" since that Act isn't in force yet. **Add a new
   tax computation here** — same pattern: a frozen input/result dataclass
   pair + a pure function, registered in `engine.py`'s `RULES`/`_INPUT_TYPES`
-  dicts.
+  dicts (or `_SPECS` if the input shape needs custom construction).
+- `rules/personal/` — **implemented.** The individual (Sec 115BAC old-vs-new
+  regime) computation, a separate taxpayer/Act chapter from
+  `rules/regime_comparison.py`'s corporate 115BAA/115BAB comparison despite
+  the similar name — the two share no code. `regime_comparison_personal.py`
+  computes both regimes via `slab_tables.py` (rate/slab data),
+  `deductions.py` (Chapter VI-A + salary deductions, regime-eligibility
+  aware), `rebate_87a.py`, and `surcharge_cess.py`, and reports a
+  `breakeven_deductions` figure (the deduction total at which the old regime
+  overtakes) plus a real `RegimeRecommendation.EITHER` case for when the Sec
+  87A rebate zeroes both regimes at low incomes — never a bare
+  old-regime-wins default from an unclaimed-deductions input. Every step is
+  tagged with its section, feeding `orchestration/nodes/computation_citations.py`.
 - `cii_tables.py` — **implemented** (a real `CII_TABLE` + `get_cii()`), but
   currently **unwired** — `rules/capital_gains.py` deliberately raises its
   own explicit "CII data required" error for any indexed-LTCG case instead
@@ -544,11 +594,21 @@ This package's only job is control flow — it calls into `services/*` and
 manages state; it must never contain a statutory rule, a prompt, or a
 retrieval algorithm itself.
 - `state.py` — the shared state schema threaded through every graph node.
-  Now also carries `computation_inputs: dict[str, Any] | None`.
+  Now also carries `computation_inputs`/`parsed_query_inputs`/`assumptions`
+  (personal-tax free-text extraction) and `uncited_sections` (computation
+  citations).
 - `graphs/query_graph.py` — **fully implemented.** The LangGraph
   `StateGraph` wiring the full sequence: `classify_intent → resolve_temporal
-  → (computation | retrieval → narrate → evidence_gate) → assemble_response →
-  audit_log`. `run_query_graph()` builds the initial state from the request,
+  → (computation [→ ground_truth_check → computation_citations] | retrieval →
+  narrate → evidence_gate) → assemble_response → audit_log`. A computation is
+  triggered, in priority order, by an explicit `computation_request`, an
+  uploaded document, or (for personal-tax queries specifically) inputs parsed
+  straight out of the query text via `services/query/input_extractor.py` —
+  see `_infer_rule_name`'s `states_income()` check, which takes priority over
+  the generic corporate `regime_comparison` keyword match precisely because
+  "which regime should I choose" alone is ambiguous between the corporate
+  and personal comparisons, and a stated income figure disambiguates
+  decisively. `run_query_graph()` builds the initial state from the request,
   invokes the compiled graph, and returns `final_response` merged with the
   persisted audit row's id as `audit_log_id`.
 - `graphs/ingestion_graph.py` — the executable version of the
@@ -558,13 +618,62 @@ retrieval algorithm itself.
   rather than through this graph; worth reconciling at some point so there's
   one ingestion entrypoint, not two.
 - `nodes/assemble_response.py` — **implemented.** Builds the final
-  `{answer, citations, computation_trace, gate_status, as_of_date}` object
-  from whichever branch ran; a missing-computation-data result becomes an
-  explicit `FLAGGED` response naming what's missing, never a guess.
+  `{answer, citations, computation_trace, gate_status, as_of_date, ...}`
+  object from whichever branch ran; a missing-computation-data result becomes
+  an explicit `FLAGGED` response naming what's missing (or, for personal-tax,
+  a natural clarifying question) rather than a guess. `personal_regime_comparison`
+  gets a dedicated narrative renderer (old vs new regime figures, breakeven
+  point, deciding factors) since its output doesn't read well through the
+  generic key:value renderer every other rule uses.
+- `nodes/computation_citations.py` — **new.** Resolves the statutory sections
+  a computation trace cited (`ComputationTrace.statutory_references`, itself
+  merged from each `TraceStep.section_reference`) into verbatim citations via
+  `graph_store.citations_for_sections()`, so a computation-only answer still
+  returns real, checkable sources instead of `citations: []`. These are
+  verified by construction (never pass through an LLM) and skip the Evidence
+  Gate. Runs after `ground_truth_check` for every successfully computed
+  result — distinct from that node, which cross-checks the applied *rate*,
+  not provenance. `uncited_sections` surfaces whichever cited sections the
+  graph couldn't resolve (today, that's every personal-tax section — the
+  graph holds committed rules for Sec 80C/80D/24(b) but zero for
+  115BAC/87A/16(ia)) rather than silently returning fewer citations.
 - `nodes/audit_log_node.py` — **implemented.** Writes the insert-only
   `AuditLog` row (first real writes to this table) — `citations` is stored
   via Prisma's `Json(...)` wrapper (required for JSON-typed fields in
-  prisma-client-py, not just a raw dict/list).
+  prisma-client-py, not just a raw dict/list). A write failure is logged
+  loudly but never sinks an otherwise-good answer: the response still reaches
+  the user with `audit_log_id: ""`.
+
+### `app/services/analysis/` — ITR return analysis (**new top-level package**)
+
+Recomputes a filed personal-tax return from its own declared inputs, diffs
+the result against what was actually filed, and scores the discrepancies —
+distinct from `services/query/`'s forward computation (a user asks "what
+would I owe"), this is the reverse direction ("here's what I filed, was it
+right"). Doesn't fit under `query/`, `computation/`, or `rag/` alone since
+it's part pure computation and part retrieval-adjacent extraction, so it's
+its own package:
+- `itr_extractor.py` — document (a filed return, uploaded as text/PDF) ->
+  declared facts, each with the source line it came from.
+- `reconciler.py` — **pure, zero I/O.** Recomputes from the declared inputs
+  via the same `computation/rules/personal/` rules the forward query path
+  uses, diffs against what was actually filed, and emits `Discrepancy`
+  objects (type, severity, declared vs. correct figure, cost, source line).
+- `penalty_mapper.py` — discrepancy -> statutory penalty, via a Neo4j rule
+  graph lookup only (no penalty logic of its own). Currently returns no
+  penalties in practice — the graph has no committed personal-tax rules yet
+  (see `graph_store.py`'s coverage note) — so `routes.py` always returns
+  `penalties: []` today; detection and "where it went wrong" don't depend on
+  this and work regardless.
+- `ai_score.py` — **pure, deterministic.** Discrepancies -> an accuracy and
+  risk score. No LLM anywhere in this package: it never decides whether a
+  return is wrong, never picks a penalty, and never computes the score --
+  those are arithmetic and graph lookups. An LLM only narrates the result,
+  upstream in the frontend/orchestration layer.
+- `routes.py` — `POST /api/v1/personal-tax/analyze-return`: upload a filed
+  return, get back the discrepancies (each tagged with its source line) plus
+  the AI score. Wiring only, same as `services/query/routes.py` is wiring
+  over the query graph — no detection logic lives in this file.
 
 ---
 
@@ -648,3 +757,7 @@ retrieval algorithm itself.
 | Wiring Cost Inflation Index data into indexed capital gains (currently unwired) | `services/computation/cii_tables.py` + `services/computation/rules/capital_gains.py` |
 | Extending document-upload extraction to a rule other than capital gains | `services/rag/extraction/document_extraction.py` + `services/rag/prompts/extraction_prompts.py` |
 | A user-facing (non-admin) *statutory-search* document upload endpoint | New — doesn't exist yet; see the `user-docs` namespace note in §5 |
+| A new personal-tax deduction/rebate/slab rule            | `services/computation/rules/personal/` (`slab_tables.py` for rate data) |
+| A change to how personal-tax inputs get parsed from free text | `services/query/input_extractor.py`                    |
+| A change to how a computed trace's citations get resolved | `orchestration/nodes/computation_citations.py` + `services/rag/retriever/graph_store.py`'s `citations_for_sections` |
+| A new ITR discrepancy check / penalty mapping             | `services/analysis/reconciler.py` / `services/analysis/penalty_mapper.py` |

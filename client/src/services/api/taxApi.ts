@@ -1,109 +1,93 @@
+/**
+ * Tax assistant API. `sendPrompt` calls the real backend
+ * (POST /api/v1/{workflowId}/query) for every workflow -- corporate-tax,
+ * capital-gains and personal-tax all have real computation rules wired up
+ * (see backend/app/services/computation/engine.py's RULES), so none of them
+ * are routed to the mock. `analyzeReturn` (upload a filed ITR, get back
+ * discrepancies + an AI score) is a separate, additional capability.
+ *
+ * createConversation / uploadDocument / enhancePrompt still come from the
+ * mock: no backend endpoint exists for these. Conversations are client-side
+ * only, and the upload route that does exist (/admin/documents/upload)
+ * ingests STATUTORY sources into the shared knowledge base -- it is not a
+ * place to put a user's own return (that's what analyzeReturn is for).
+ */
+
 import { mockTaxApi } from '../mock/mockTaxApi'
-import { API_BASE_URL } from './authApi'
-import type { Citation, GateStatus, Message, ResponseWidget, SendPromptRequest, SendPromptResponse } from '../../types'
+import { queryTax, widgetsFromQueryResponse } from './taxQueryApi'
+import { analyzeReturn as analyzeReturnRequest, widgetsFromAnalyzeResponse } from './analyzeReturnApi'
 import { createId } from '../../utils/id'
+import type { Message, SendPromptRequest, SendPromptResponse } from '../../types'
 
-type QueryResponse = {
-  answer: string
-  summary: string
-  citations: Citation[]
-  computation_trace: Record<string, unknown> | null
-  ground_truth_check: { verified: boolean; mismatches: string[] } | null
-  gate_status: GateStatus
-  as_of_date: string
-  audit_log_id: string
-}
+const CLARIFICATION_FOLLOW_UPS = [
+  'It is salary income.',
+  'It is business or professional income.',
+]
 
-async function postQuery(domain: string, accessToken: string, query: string): Promise<QueryResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/${domain}/query`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify({ query }),
-  })
+const DEFAULT_FOLLOW_UPS = [
+  'What changes if I add another deduction proof?',
+  'Which documents are still missing?',
+  'Can you turn this into a filing checklist?',
+]
 
-  if (!response.ok) {
-    const body = await response.json().catch(() => null)
-    throw new Error(body?.detail ?? 'Something went wrong')
+async function sendPrompt(
+  request: SendPromptRequest,
+  accessToken: string | null,
+): Promise<SendPromptResponse> {
+  const response = await queryTax(request.workflowId, request.prompt, accessToken)
+
+  const message: Message = {
+    id: createId('message'),
+    role: 'assistant',
+    content: response.answer,
+    createdAt: new Date().toISOString(),
+    status: 'complete',
+    widgets: widgetsFromQueryResponse(response),
+    gateStatus: response.gate_status,
+    auditId: response.audit_log_id,
   }
-
-  return response.json() as Promise<QueryResponse>
-}
-
-function computationTraceWidget(trace: Record<string, unknown>): ResponseWidget {
-  const outputs = (trace.outputs as Record<string, unknown>) ?? {}
-  const references = (trace.statutory_references as string[]) ?? []
 
   return {
-    id: createId('widget'),
-    type: 'metric-grid',
-    title: `Computation — ${String(trace.rule_name ?? 'result')}`,
-    metrics: [
-      ...Object.entries(outputs).map(([label, value]) => ({ label, value: String(value) })),
-      ...(references.length ? [{ label: 'Statutory references', value: references.join('; ') }] : []),
-    ],
+    message,
+    // When the backend has asked a question, "what changes if I add a deduction
+    // proof?" is noise -- the useful follow-ups are answers to what it asked.
+    followUps: response.clarification_needed
+      ? CLARIFICATION_FOLLOW_UPS
+      : DEFAULT_FOLLOW_UPS,
   }
 }
 
-function gateWarningWidget(gateStatus: GateStatus): ResponseWidget {
-  const isFlagged = gateStatus === 'FLAGGED'
+async function analyzeReturn(
+  file: File,
+  accessToken: string | null,
+): Promise<SendPromptResponse> {
+  const response = await analyzeReturnRequest(file, accessToken)
+
+  const message: Message = {
+    id: createId('message'),
+    role: 'assistant',
+    content: response.usable
+      ? 'I reviewed your return and checked it against the statute.'
+      : 'I need a little more detail to review this return.',
+    createdAt: new Date().toISOString(),
+    status: 'complete',
+    widgets: widgetsFromAnalyzeResponse(response),
+  }
+
   return {
-    id: createId('widget'),
-    type: 'warnings',
-    title: isFlagged ? 'Needs Review' : 'Partially Verified',
-    confidence: isFlagged ? 0 : 60,
-    items: [
-      {
-        id: createId('warn'),
-        title: isFlagged ? 'Unverified or missing sources' : 'Some claims unverified',
-        detail: isFlagged
-          ? 'This response could not be fully grounded in the Knowledge Graph — treat it as a starting point, not a final answer.'
-          : 'Some claims in this response could not be verified against retrieved sources and were flagged.',
-        severity: isFlagged ? 'high' : 'medium',
-      },
-    ],
+    message,
+    followUps: response.usable
+      ? [
+          'Which regime should I have filed under?',
+          'How do I fix the over-claimed deduction?',
+          'What is my correct tax payable?',
+        ]
+      : ['My income is …', 'I filed under the old regime', 'I filed under the new regime'],
   }
-}
-
-function widgetsFromResponse(result: QueryResponse): ResponseWidget[] {
-  const widgets: ResponseWidget[] = [
-    { id: createId('widget'), type: 'summary', title: 'Summary', markdown: result.summary },
-  ]
-
-  if (result.computation_trace) {
-    widgets.push(computationTraceWidget(result.computation_trace))
-  }
-
-  if (result.citations.length > 0) {
-    widgets.push({ id: createId('widget'), type: 'citations', title: 'Sources', citations: result.citations })
-  }
-
-  if (result.gate_status !== 'VERIFIED') {
-    widgets.push(gateWarningWidget(result.gate_status))
-  }
-
-  return widgets
 }
 
 export const taxApi = {
   ...mockTaxApi,
-  async sendPrompt(request: SendPromptRequest, accessToken: string): Promise<SendPromptResponse> {
-    const result = await postQuery(request.workflowId, accessToken, request.prompt)
-
-    const message: Message = {
-      id: createId('message'),
-      role: 'assistant',
-      content: result.answer,
-      createdAt: new Date().toISOString(),
-      status: 'complete',
-      widgets: widgetsFromResponse(result),
-      gateStatus: result.gate_status,
-      auditId: result.audit_log_id,
-    }
-
-    return { message, followUps: [] }
-  },
+  sendPrompt,
+  analyzeReturn,
 }

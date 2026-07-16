@@ -23,6 +23,7 @@ from app.core.security import hash_password
 from app.db import prisma
 from app.middleware import AuthEventLoggingMiddleware
 from app.schemas import OrganizationResponse
+from app.services.analysis.routes import router as analysis_router
 from app.services.query.routes import router as query_router
 
 SEED_ORGS = [
@@ -81,6 +82,7 @@ app.include_router(auth_router)
 app.include_router(admin_auth_router, prefix="/admin/auth")
 app.include_router(admin_router, prefix="/admin")
 app.include_router(query_router)
+app.include_router(analysis_router)
 
 
 @app.get("/health")

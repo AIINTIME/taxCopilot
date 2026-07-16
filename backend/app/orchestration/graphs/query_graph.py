@@ -5,7 +5,7 @@
         -> [computation_request given] -> computation
         -> [free-text query, rule inferred] -> computation
         -> [pure text query / rule not inferred] -> retrieval -> narrate -> evidence_gate
-    computation -> [computed] -> ground_truth_check -> assemble_response -> audit_log
+    computation -> [computed] -> ground_truth_check -> computation_citations -> assemble_response -> audit_log
     computation -> [rule not inferred at all] -> computation_fallback -> retrieval
     computation -> [rule known but fields missing] -> assemble_response -> audit_log
     evidence_gate -> assemble_response -> audit_log
@@ -23,9 +23,15 @@ from langgraph.graph import END, START, StateGraph
 
 from app.orchestration.nodes.assemble_response import assemble_response
 from app.orchestration.nodes.audit_log_node import write_audit_log
+from app.orchestration.nodes.computation_citations import resolve_computation_citations
 from app.orchestration.state import QueryGraphState
 from app.services.computation.computation_trace import ComputationTrace
 from app.services.computation.engine import MissingComputationInputError, compute
+from app.services.query.input_extractor import (
+    clarification_questions,
+    extract_inputs,
+    states_income,
+)
 from app.services.query.intent_classifier import Intent, classify_intent
 from app.services.query.temporal_resolver import resolve_as_of
 from app.services.rag.document_lookup import resolve_document_names
@@ -63,6 +69,15 @@ _RULE_NAME_PATTERNS: dict[str, re.Pattern[str]] = {
 
 
 def _infer_rule_name(query: str) -> str | None:
+    # A stated personal income figure ("my salary is 21 lakhs") is a decisive
+    # signal for the personal (Sec 115BAC) regime comparison -- checked before
+    # the generic corporate rule patterns below, because "which regime should
+    # I choose" alone would otherwise match _RULE_NAME_PATTERNS["regime_comparison"]
+    # (the CORPORATE 115BAA/115BAB comparison), which takes no income figure
+    # and would raise on the mismatched inputs. An income figure disambiguates
+    # decisively; its absence leaves "regime" free to mean the corporate rule.
+    if states_income(query):
+        return "personal_regime_comparison"
     for rule_name, pattern in _RULE_NAME_PATTERNS.items():
         if pattern.search(query):
             return rule_name
@@ -131,7 +146,37 @@ async def _computation_node(state: QueryGraphState) -> dict:
                     ],
                 }
             }
-        inputs = state.get("computation_inputs") or {}
+
+        if rule_name == "personal_regime_comparison":
+            # Unlike the other inferred rules (which expect the caller to
+            # supply `computation_inputs` directly), personal-tax queries are
+            # parsed straight out of the query text -- there is no form/UI
+            # asking for gross_income/deductions the way an explicit
+            # computation_request would. See services/query/input_extractor.py.
+            extracted = extract_inputs(state["query"])
+            logger.info(
+                "[FLOW] computation: personal_regime_comparison parsed inputs=%s "
+                "missing=%s assumptions=%s",
+                extracted.values, extracted.missing, extracted.assumptions,
+            )
+            if extracted.needs_clarification:
+                questions = clarification_questions(extracted)
+                return {
+                    "computation_result": {
+                        "status": "missing_data",
+                        "rule_name": rule_name,
+                        "missing_fields": list(extracted.missing),
+                        "clarification": "\n".join(
+                            ["I need one more detail before I can compute this:", *questions]
+                        ),
+                    },
+                    "assumptions": list(extracted.assumptions),
+                }
+            inputs = extracted.to_rule_inputs()
+            assumptions = list(extracted.assumptions)
+        else:
+            inputs = state.get("computation_inputs") or {}
+            assumptions = []
         logger.info(
             "[FLOW] computation: rule_name=%s inferred from query text, inputs=%s",
             rule_name, inputs,
@@ -153,7 +198,12 @@ async def _computation_node(state: QueryGraphState) -> dict:
         }
 
     logger.info("[FLOW] computation: result outputs=%s", trace.outputs)
-    return {"computation_result": {"status": "computed", "trace": trace.model_dump(mode="json")}}
+    result: dict[str, Any] = {
+        "computation_result": {"status": "computed", "trace": trace.model_dump(mode="json")}
+    }
+    if rule_name == "personal_regime_comparison":
+        result["assumptions"] = assumptions
+    return result
 
 
 async def _ground_truth_check_node(state: QueryGraphState) -> dict:
@@ -313,6 +363,7 @@ def build_query_graph():
     graph.add_node("computation", _computation_node)
     graph.add_node("computation_fallback", _clear_computation_fallback_node)
     graph.add_node("ground_truth_check", _ground_truth_check_node)
+    graph.add_node("computation_citations", resolve_computation_citations)
     graph.add_node("retrieval", _retrieval_node)
     graph.add_node("narrate", _narrate_node)
     graph.add_node("evidence_gate", _evidence_gate_node)
@@ -341,7 +392,8 @@ def build_query_graph():
         },
     )
     graph.add_edge("computation_fallback", "retrieval")
-    graph.add_edge("ground_truth_check", "assemble_response")
+    graph.add_edge("ground_truth_check", "computation_citations")
+    graph.add_edge("computation_citations", "assemble_response")
     graph.add_edge("retrieval", "narrate")
     graph.add_edge("narrate", "evidence_gate")
     graph.add_edge("evidence_gate", "assemble_response")

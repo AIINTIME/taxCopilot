@@ -56,6 +56,24 @@ class QueryResponse(BaseModel):
     as_of_date: date
     audit_log_id: str
 
+    # Sections the computation trace cited that the rule graph could not
+    # resolve to a source. A computation is VERIFIED because its figures come
+    # from pure functions over versioned rate tables -- not because anything
+    # was cited -- so this keeps "verified but unsourced" visible to the client
+    # instead of silently returning an empty citations list.
+    uncited_sections: list[str] = []
+
+    # Facts the extractor inferred rather than being told, e.g. that no
+    # deductions were claimed. Surfaced so the user can correct them: an
+    # unstated deduction is the single most likely reason a regime
+    # recommendation is right in arithmetic and wrong in practice.
+    assumptions: list[str] = []
+
+    # True when required inputs were missing and `answer` is a question rather
+    # than an answer. The system asks instead of guessing -- computing exactly
+    # on an invented input is worse than not computing.
+    clarification_needed: bool = False
+
 
 @router.post("/{domain}/query", response_model=QueryResponse)
 async def query(domain: str, payload: QueryRequest, user=Depends(get_current_user)):
