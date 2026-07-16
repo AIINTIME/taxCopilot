@@ -1,5 +1,7 @@
 import { motion } from 'framer-motion'
 import { Bot, Check, Copy, RotateCcw, ThumbsDown, ThumbsUp, UserRound } from 'lucide-react'
+import { useState } from 'react'
+import { useAppState } from '../../store/useAppState'
 import type { Message } from '../../types'
 import { formatTime } from '../../utils/date'
 import { formatFileSize } from '../../utils/format'
@@ -11,6 +13,14 @@ type MessageBubbleProps = {
 
 export function MessageBubble({ message }: MessageBubbleProps) {
   const isAssistant = message.role === 'assistant'
+  const { regenerateResponse, isThinking } = useAppState()
+  const [copied, setCopied] = useState(false)
+
+  function handleCopy() {
+    void navigator.clipboard.writeText(message.content)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
 
   return (
     <motion.article
@@ -59,11 +69,11 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
         {isAssistant ? (
           <footer className="message-actions">
-            <button type="button">
-              <Copy size={15} />
-              Copy
+            <button type="button" onClick={handleCopy}>
+              {copied ? <Check size={15} /> : <Copy size={15} />}
+              {copied ? 'Copied' : 'Copy'}
             </button>
-            <button type="button">
+            <button type="button" onClick={() => void regenerateResponse(message.id)} disabled={isThinking}>
               <RotateCcw size={15} />
               Regenerate
             </button>

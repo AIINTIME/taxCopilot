@@ -10,8 +10,4 @@ from app.shared.llm.router import get_llm_provider
 async def generate_narrative(
     system_prompt: str, messages: list[LLMMessage]
 ) -> LLMResponse:
-    raise NotImplementedError(
-        "TODO: call get_llm_provider().generate(system_prompt, messages, "
-        "temperature=0) -- temperature is enforced inside the provider, "
-        "but pass 0 here too for clarity at the call site"
-    )
+    return await get_llm_provider().generate(system_prompt, messages, temperature=0)

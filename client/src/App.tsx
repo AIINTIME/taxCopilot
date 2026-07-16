@@ -5,10 +5,10 @@ import { AdminLayout } from './components/layout/AdminLayout'
 import { AppLayout } from './components/layout/AppLayout'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { AdminDashboardPage } from './pages/AdminDashboardPage'
+import { AdminDocumentsPage } from './pages/AdminDocumentsPage'
 import { AdminRegisterPage } from './pages/AdminRegisterPage'
 import {
   AdminAuditLogsPage,
-  AdminDocumentsPage,
   AdminRolesPage,
   AdminSecurityPage,
   AdminSettingsPage,

@@ -51,12 +51,32 @@ export type RoleItem = {
   created_at: string
 }
 
+export type DocumentUploadResponse = {
+  document_id: string
+  status: 'UPLOADED' | 'SKIPPED_DUPLICATE'
+  chunks_embedded: number
+  rule_proposals_created: number
+  auto_approved_count: number
+  pending_review_count: number
+}
+
+export type DocumentListItem = {
+  id: string
+  filename: string
+  status: 'PROCESSING' | 'EMBEDDED' | 'FAILED'
+  chunks_embedded: number
+  uploaded_by: string
+  created_at: string
+}
+
 async function request<T>(path: string, options: RequestInit = {}) {
+  const isFormData = options.body instanceof FormData
+
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
     credentials: 'include',
     headers: {
-      'Content-Type': 'application/json',
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...options.headers,
     },
   })
@@ -189,5 +209,20 @@ export const adminApi = {
       '/admin/audit-logs',
       { headers: { Authorization: `Bearer ${accessToken}` } },
     )
+  },
+  uploadDocument(accessToken: string, file: File) {
+    const formData = new FormData()
+    formData.append('file', file)
+
+    return request<DocumentUploadResponse>('/admin/documents/upload', {
+      method: 'POST',
+      body: formData,
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+  },
+  listDocuments(accessToken: string) {
+    return request<DocumentListItem[]>('/admin/documents', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
   },
 }

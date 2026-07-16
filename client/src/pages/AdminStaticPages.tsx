@@ -3,7 +3,6 @@ import {
   Bell,
   CheckCircle2,
   Database,
-  FileText,
   KeyRound,
   LockKeyhole,
   Server,
@@ -11,7 +10,6 @@ import {
   SlidersHorizontal,
   Save,
   Trash2,
-  Upload,
   Users,
   Zap,
 } from 'lucide-react'
@@ -103,39 +101,6 @@ function AdminStaticPage({
         </div>
       </div>
     </section>
-  )
-}
-
-export function AdminDocumentsPage() {
-  return (
-    <AdminStaticPage
-      eyebrow="Knowledge base"
-      title="Documents"
-      description="Review uploaded references, ingestion status, and document coverage."
-      icon={<FileText size={24} />}
-      metrics={[
-        { label: 'Documents', value: '24', detail: 'Static library count' },
-        { label: 'Embedded', value: '18', detail: 'Ready for retrieval' },
-        { label: 'In review', value: '6', detail: 'Awaiting admin approval' },
-      ]}
-      primary={{
-        title: 'Recent Documents',
-        rows: [
-          { title: 'Finance Act 2025 notes.pdf', meta: 'PDF uploaded today', status: 'Embedded' },
-          { title: 'Capital gains circular digest.docx', meta: 'DOCX updated yesterday', status: 'Review' },
-          { title: 'Depreciation rates reference.md', meta: 'Markdown source, 12 Jul', status: 'Embedded' },
-          { title: 'TDS compliance checklist.txt', meta: 'Text note, 09 Jul', status: 'Draft' },
-        ],
-      }}
-      secondary={{
-        title: 'Document Tools',
-        items: [
-          { icon: <Upload size={16} />, title: 'Upload queue', detail: 'Mock upload workflow' },
-          { icon: <Database size={16} />, title: 'Vector coverage', detail: 'Check embedded sources' },
-          { icon: <CheckCircle2 size={16} />, title: 'Review proposals', detail: 'Approve extracted rules' },
-        ],
-      }}
-    />
   )
 }
 

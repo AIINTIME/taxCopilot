@@ -1,4 +1,5 @@
 import type { ResponseWidget } from '../../types'
+import { CitationsWidget } from './citations/CitationsWidget'
 import { ComparisonWidget } from './comparison/ComparisonWidget'
 import { LegalDraftWidget } from './legal/LegalDraftWidget'
 import { MarkdownWidget } from './markdown/MarkdownWidget'
@@ -18,5 +19,7 @@ export function WidgetRenderer({ widget }: WidgetRendererProps) {
   if (widget.type === 'warnings') return <WarningsWidget widget={widget} />
   if (widget.type === 'table') return <TableWidgetView widget={widget} />
   if (widget.type === 'legal-draft') return <LegalDraftWidget widget={widget} />
-  return <MetricGridWidget widget={widget} />
+  if (widget.type === 'citations') return <CitationsWidget widget={widget} />
+  if (widget.type === 'metric-grid') return <MetricGridWidget widget={widget} />
+  return null
 }

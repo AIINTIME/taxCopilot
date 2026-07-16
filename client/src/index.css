@@ -1682,6 +1682,37 @@ a:focus-visible {
   background: #fff1f2;
 }
 
+.citation-list {
+  display: grid;
+  gap: 8px;
+}
+
+.citation-list article {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #dcfce7;
+  color: #14532d;
+  background: #f0fdf4;
+}
+
+.citation-list article.is-unverified {
+  border-color: #fed7aa;
+  color: #9a3412;
+  background: #fff7ed;
+}
+
+.citation-list strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.citation-list p {
+  font-size: 13px;
+}
+
 .table-wrap {
   overflow: auto;
 }
@@ -2405,67 +2436,34 @@ th {
   background: #1d4ed8;
 }
 
-.admin-selected-docs {
-  display: grid;
-  gap: 6px;
+.admin-upload-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
-.admin-selected-docs span {
-  overflow: hidden;
-  padding: 7px 9px;
-  border: 1px solid rgba(37, 99, 235, 0.22);
-  border-radius: 8px;
-  color: #bfdbfe;
-  background: rgba(37, 99, 235, 0.1);
+.admin-upload-area.is-dragging {
+  border-color: #2563eb;
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.admin-upload-error {
+  margin: 6px 0 0;
   font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: #f87171;
 }
 
-.admin-document-list {
-  display: grid;
-  gap: 8px;
-}
-
-.admin-document-item {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
-  padding: 9px 10px;
-  border: 1px solid rgba(71, 85, 105, 0.24);
-  border-radius: 10px;
-}
-
-.admin-document-item__icon {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 8px;
-  color: #99f6e4;
-  background: rgba(20, 184, 166, 0.12);
-}
-
-.admin-document-item strong,
-.admin-document-item span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.admin-document-item strong {
-  color: #e2e8f0;
-  font-size: 13px;
-}
-
-.admin-document-item div > span {
+.admin-upload-status-list {
   display: flex;
-  align-items: center;
-  gap: 5px;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.admin-upload-status-line {
+  margin: 0;
+  font-size: 12px;
   color: #64748b;
-  font-size: 11px;
 }
 
 /* ── User list ───────────────────────────────────────── */
@@ -3646,6 +3644,10 @@ th {
 
 :root:not([data-theme="dark"]) .admin-user-item {
   border-color: #f1f5f9;
+}
+
+:root:not([data-theme="dark"]) .admin-upload-status-line {
+  color: #475569;
 }
 
 :root:not([data-theme="dark"]) .admin-role-item {

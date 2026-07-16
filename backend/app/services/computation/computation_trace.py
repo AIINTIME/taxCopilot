@@ -4,7 +4,7 @@ the as-of context it ran under. Consumed by orchestration/nodes/
 assemble_response.py and orchestration/nodes/audit_log_node.py.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel
@@ -28,4 +28,11 @@ def build_computation_trace(
     statutory_references: list[str],
     as_of: TaxYearContext,
 ) -> ComputationTrace:
-    raise NotImplementedError("TODO: assemble and return a ComputationTrace")
+    return ComputationTrace(
+        rule_name=rule_name,
+        inputs=inputs,
+        outputs=outputs,
+        statutory_references=statutory_references,
+        as_of=as_of,
+        computed_at=datetime.now(timezone.utc),
+    )

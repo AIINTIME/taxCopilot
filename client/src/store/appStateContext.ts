@@ -27,6 +27,7 @@ export type AppContextValue = AppState & {
   removeAttachment: (attachmentId: string) => void
   sendPrompt: (prompt: string) => Promise<void>
   retryLastPrompt: () => Promise<void>
+  regenerateResponse: (assistantMessageId: string) => Promise<void>
   toggleTheme: () => void
 }
 
