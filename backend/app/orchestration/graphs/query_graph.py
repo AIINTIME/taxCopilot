@@ -16,7 +16,6 @@ plumbing, per the orchestration-layer rule.
 """
 
 import logging
-import re
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -27,12 +26,9 @@ from app.orchestration.nodes.computation_citations import resolve_computation_ci
 from app.orchestration.state import QueryGraphState
 from app.services.computation.computation_trace import ComputationTrace
 from app.services.computation.engine import MissingComputationInputError, compute
-from app.services.query.input_extractor import (
-    clarification_questions,
-    extract_inputs,
-    states_income,
-)
-from app.services.query.intent_classifier import Intent, classify_intent
+from app.services.query.input_extractor import clarification_questions
+from app.services.query.intent_classifier_types import Intent
+from app.services.query.llm_query_understanding import QueryUnderstandingError, classify_and_extract
 from app.services.query.temporal_resolver import resolve_as_of
 from app.services.rag.document_lookup import resolve_document_names
 from app.services.rag.evidence_gate import (
@@ -59,35 +55,38 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_DOCUMENT_RULE_NAME = "capital_gains"
 
-_RULE_NAME_PATTERNS: dict[str, re.Pattern[str]] = {
-    "mat": re.compile(r"\b(mat\b|minimum alternate tax|115jb)\b", re.IGNORECASE),
-    "amt": re.compile(r"\b(amt\b|alternate minimum tax|115jc)\b", re.IGNORECASE),
-    "regime_comparison": re.compile(r"\b(regime|115baa|115bab)\b", re.IGNORECASE),
-    "depreciation": re.compile(r"\b(depreciation|wdv|written down value)\b", re.IGNORECASE),
-    "capital_gains": re.compile(r"\b(capital gains?|ltcg|stcg|indexation)\b", re.IGNORECASE),
-}
-
-
-def _infer_rule_name(query: str) -> str | None:
-    # A stated personal income figure ("my salary is 21 lakhs") is a decisive
-    # signal for the personal (Sec 115BAC) regime comparison -- checked before
-    # the generic corporate rule patterns below, because "which regime should
-    # I choose" alone would otherwise match _RULE_NAME_PATTERNS["regime_comparison"]
-    # (the CORPORATE 115BAA/115BAB comparison), which takes no income figure
-    # and would raise on the mismatched inputs. An income figure disambiguates
-    # decisively; its absence leaves "regime" free to mean the corporate rule.
-    if states_income(query):
-        return "personal_regime_comparison"
-    for rule_name, pattern in _RULE_NAME_PATTERNS.items():
-        if pattern.search(query):
-            return rule_name
-    return None
-
 
 async def _classify_intent_node(state: QueryGraphState) -> dict:
-    intent = await classify_intent(state["query"])
-    logger.info("[FLOW] classify_intent: query=%r -> intent=%s", state["query"], intent.value)
-    return {"intent": intent}
+    # The LLM is the sole classifier: one call decides intent, identifies the
+    # computation rule (if any), and -- for personal_regime_comparison --
+    # extracts evidence-verified, re-parsed field values (see
+    # llm_query_understanding.py for why extracted numbers are never taken on
+    # the LLM's own word even though routing is). There is no deterministic
+    # fallback here by design -- a failure is re-raised as
+    # QueryUnderstandingError and propagates out of run_query_graph; the API
+    # layer (services/query/routes.py) turns that into a clear, retry-able
+    # error rather than silently degrading to a weaker classifier.
+    try:
+        understanding = await classify_and_extract(state["query"])
+    except Exception as exc:
+        logger.exception("[FLOW] classify_intent: LLM query understanding FAILED")
+        raise QueryUnderstandingError(
+            "Could not understand the query -- the classification LLM call failed"
+        ) from exc
+
+    logger.info(
+        "[FLOW] classify_intent: query=%r -> intent=%s rule_name=%s",
+        state["query"], understanding.intent.value, understanding.rule_name,
+    )
+    result: dict[str, Any] = {
+        "intent": understanding.intent,
+        "rule_name": understanding.rule_name,
+    }
+    if understanding.extracted is not None:
+        result["parsed_query_inputs"] = understanding.extracted.to_rule_inputs()
+        result["parsed_query_missing_fields"] = list(understanding.extracted.missing)
+        result["assumptions"] = list(understanding.extracted.assumptions)
+    return result
 
 
 async def _resolve_temporal_node(state: QueryGraphState) -> dict:
@@ -132,7 +131,13 @@ async def _computation_node(state: QueryGraphState) -> dict:
             rule_name, inputs,
         )
     else:
-        rule_name = _infer_rule_name(state["query"])
+        # classify_intent's LLM call always ran and succeeded by the time this
+        # node is reached -- a failure there raises QueryUnderstandingError and
+        # aborts the graph before _computation_node ever executes (see
+        # _classify_intent_node). So state["rule_name"] is always present here;
+        # None is a legitimate value meaning the LLM could not confidently
+        # identify a computation rule for this query.
+        rule_name = state["rule_name"]
         if rule_name is None:
             logger.info(
                 "[FLOW] computation: no rule_name inferred from query -- falling back to retrieval"
@@ -150,30 +155,33 @@ async def _computation_node(state: QueryGraphState) -> dict:
         if rule_name == "personal_regime_comparison":
             # Unlike the other inferred rules (which expect the caller to
             # supply `computation_inputs` directly), personal-tax queries are
-            # parsed straight out of the query text -- there is no form/UI
-            # asking for gross_income/deductions the way an explicit
-            # computation_request would. See services/query/input_extractor.py.
-            extracted = extract_inputs(state["query"])
+            # parsed straight out of the query text by classify_intent's LLM
+            # call -- there is no form/UI asking for gross_income/deductions
+            # the way an explicit computation_request would. See
+            # llm_query_understanding.py for the evidence-span verification
+            # and re-parsing that makes these numbers trustworthy.
+            inputs = state.get("parsed_query_inputs") or {}
+            missing = state.get("parsed_query_missing_fields") or []
+            assumptions = list(state.get("assumptions") or [])
             logger.info(
-                "[FLOW] computation: personal_regime_comparison parsed inputs=%s "
-                "missing=%s assumptions=%s",
-                extracted.values, extracted.missing, extracted.assumptions,
+                "[FLOW] computation: personal_regime_comparison using LLM-parsed "
+                "inputs=%s missing=%s",
+                inputs, missing,
             )
-            if extracted.needs_clarification:
-                questions = clarification_questions(extracted)
+
+            if missing:
+                questions = clarification_questions(missing)
                 return {
                     "computation_result": {
                         "status": "missing_data",
                         "rule_name": rule_name,
-                        "missing_fields": list(extracted.missing),
+                        "missing_fields": missing,
                         "clarification": "\n".join(
                             ["I need one more detail before I can compute this:", *questions]
                         ),
                     },
-                    "assumptions": list(extracted.assumptions),
+                    "assumptions": assumptions,
                 }
-            inputs = extracted.to_rule_inputs()
-            assumptions = list(extracted.assumptions)
         else:
             inputs = state.get("computation_inputs") or {}
             assumptions = []
@@ -331,9 +339,10 @@ def _route_after_temporal(state: QueryGraphState) -> str:
 
 def _route_after_computation(state: QueryGraphState) -> str:
     """A query that reaches the computation node but doesn't match one of the
-    known rule names (_infer_rule_name returned None) isn't actually a
-    dead end -- it just means routing guessed COMPUTATION for a query the
-    deterministic engine has no rule for. Fall through to a real RAG search
+    known rule names (classify_intent's LLM call returned rule_name=None)
+    isn't actually a dead end -- it just means routing guessed COMPUTATION for
+    a query the deterministic engine has no rule for. Fall through to a real
+    RAG search
     instead of stranding the user with a static "mention MAT/AMT/..."
     message; that message is only appropriate once we've also failed to find
     anything relevant in the vector DB.

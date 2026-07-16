@@ -1,15 +1,22 @@
-"""Deterministic-first, embedding-backed routing of a query to computation,
+"""Deterministic, embedding-backed routing of a query to computation,
 retrieval, or both.
 
-The LLM never makes this control-flow decision. Two non-generative layers:
+NOT currently wired into the live query flow. orchestration/graphs/
+query_graph.py's classify_intent node calls
+services.query.llm_query_understanding.classify_and_extract exclusively --
+the LLM is the sole classifier by design, with no deterministic fallback: a
+failed LLM call surfaces as a clear, retry-able error at the API layer
+instead of silently degrading to this module. Kept as a standalone, still-
+tested utility (not deleted, since it and its curated examples in
+intent_examples.py remain independently correct and may be useful again),
+but nothing in the request path calls it. Two non-generative layers:
 1. A regex fast-path for the clearest, cheapest-to-recognize phrasings --
    zero API calls for the obvious cases.
 2. An embedding-based k-NN classifier (same embedding provider used for
    retrieval -- not a generative call) for anything the regex can't
    confidently place, matched against the curated labeled examples in
    intent_examples.py. Same input always produces the same output --
-   reproducible, not creative -- so this doesn't reintroduce the
-   LLM-control-flow risk the regex-only design was built to avoid.
+   reproducible, not creative.
 """
 
 import re

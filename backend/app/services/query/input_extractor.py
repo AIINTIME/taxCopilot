@@ -1,11 +1,17 @@
 """Derives computation inputs from a natural-language query. Pure, zero I/O.
 
-Deterministic and rule-based, NEVER an LLM. Intent classification tells the
-graph WHICH rule to run; this tells it WHAT to run the rule on. Both are
-control-flow decisions, and per the architecture the LLM makes neither -- and
-per validators.py, "every number must be sourced, never an LLM guess". A
-hallucinated input silently corrupts an otherwise exact computation, which is
-the worst failure this system can produce: wrong, and confidently traced.
+Deterministic and rule-based -- extract_inputs() itself never calls an LLM.
+Not currently wired into the live query flow (services.query.
+llm_query_understanding.classify_and_extract is the sole extractor there, with
+no deterministic fallback); kept as a standalone, still-tested utility.
+`parse_amount` and `detect_income_type` ARE actively used, though -- by
+llm_query_understanding.py: the LLM may point at a span of the query, but the
+number/type that actually reaches the computation engine always comes from
+re-parsing that span with the two functions below, never from the LLM's own
+stated value. Per validators.py, "every number must be sourced, never an LLM
+guess" -- a hallucinated input silently corrupts an otherwise exact
+computation, which is the worst failure this system can produce: wrong, and
+confidently traced.
 
 AMOUNTS ARE BOUND TO THE LABEL THAT GIVES THEM MEANING, never ranked. An
 earlier version took the largest number in the query as the income, which
@@ -148,8 +154,8 @@ CLARIFICATION_PROMPTS: dict[str, str] = {
 }
 
 
-def clarification_questions(extracted: ExtractedInputs) -> list[str]:
-    return [CLARIFICATION_PROMPTS[m] for m in extracted.missing if m in CLARIFICATION_PROMPTS]
+def clarification_questions(missing: tuple[str, ...] | list[str]) -> list[str]:
+    return [CLARIFICATION_PROMPTS[m] for m in missing if m in CLARIFICATION_PROMPTS]
 
 
 def _amount_from_match(match: re.Match[str]) -> float | None:
@@ -261,7 +267,13 @@ def states_income(query: str) -> bool:
     )
 
 
-def _detect_income_type(query: str) -> IncomeType | None:
+def detect_income_type(query: str) -> IncomeType | None:
+    """Re-derive an income type from a span of text via the marker list below.
+
+    Public (not `_`-prefixed): also used by llm_query_understanding.py to
+    verify an LLM-proposed income_type against the evidence span it cited,
+    rather than trusting the LLM's own classification of the span.
+    """
     lowered = query.lower()
     for income_type, markers in _INCOME_TYPE_MARKERS:
         if any(marker in lowered for marker in markers):
@@ -317,7 +329,7 @@ def extract_inputs(query: str) -> ExtractedInputs:
         values["gross_income"] = income.value
         provenance["gross_income"] = income.text
 
-    income_type = _detect_income_type(query)
+    income_type = detect_income_type(query)
     if income_type is None:
         # Materially changes the answer: only salary attracts the standard
         # deduction, so assuming it would silently understate tax for a
