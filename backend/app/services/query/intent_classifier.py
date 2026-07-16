@@ -38,12 +38,56 @@ import re
 from enum import Enum
 
 from app.services.query.input_extractor import states_income
+from app.services.query.rate_lookup import detect_deduction_query
+
+# A "how much / what limit" cue. Required for DEDUCTION_LOOKUP so that
+# "explain 80C" (conceptual -> retrieval) is not mistaken for "what is the 80C
+# limit" (figure lookup). Naming a section alone is not enough.
+#
+# "deduction under" / "rebate under" were here and had to go: they appear in
+# ordinary prose that merely REFERS to a section ("home loan interest deduction
+# under Section 24(b)"), so they hijacked qualitative questions and answered
+# them with a limits table.
+_LIMIT_CUE = (
+    "limit",
+    "maximum",
+    "max ",
+    "how much",
+    "what is the",
+    "upto",
+    "up to",
+    "amount",
+    "quantum",
+    "deduction available",
+)
+
+# Eligibility / interaction questions want reasoning, not a number, even though
+# they name sections and may carry a limit cue. "Can I claim both HRA and
+# 24(b)?" is answered by retrieval; returning the 24(b) cap answers a question
+# nobody asked. These always beat the limit cue.
+_ELIGIBILITY_MARKERS = (
+    "can i",
+    "can a",
+    "can an",
+    "am i",
+    "are we",
+    "eligible",
+    "both",
+    "together",
+    "same time",
+    "simultaneously",
+    "as well as",
+    "along with",
+    "difference between",
+)
 
 
 class Intent(str, Enum):
     COMPUTATION = "computation"
     RETRIEVAL = "retrieval"
     BOTH = "both"
+    RATE_LOOKUP = "rate_lookup"
+    DEDUCTION_LOOKUP = "deduction_lookup"
 
 
 # An amount in Indian notation, or any bare 4+ digit number. Reuses the same
@@ -119,6 +163,31 @@ _RETRIEVE_MARKERS = (
 )
 
 
+# Asking to be shown the rate table itself -- "what are the slab rates",
+# "tax slabs for AY 2025-26", "new regime rates". Distinct from a computation
+# ("what is MY tax") because no income is involved: the answer is the table,
+# read from slab_tables, not a figure computed for the user.
+# Kept to phrases that clearly ask for the rate TABLE. Deliberately excludes
+# "standard deduction" / "rebate" / "surcharge" on their own: those are as often
+# conceptual ("explain the standard deduction" -> retrieval) as lookups, and the
+# rate card already lists all three, so a slab-rate lookup shows them anyway.
+_RATE_LOOKUP_MARKERS = (
+    "slab rate",
+    "slab rates",
+    "tax slab",
+    "tax slabs",
+    "slabs for",
+    "slab for",
+    "rates for",
+    "tax rate",
+    "tax rates",
+    "income tax rate",
+    "rate of tax",
+    "regime rate",
+    "regime rates",
+)
+
+
 def _has(query: str, markers: tuple[str, ...]) -> bool:
     return any(marker in query for marker in markers)
 
@@ -130,6 +199,28 @@ def classify_intent(query: str) -> Intent:
     has_amount = bool(_AMOUNT.search(lowered))
     wants_number = _has(lowered, _COMPUTE_MARKERS)
     wants_law = _has(lowered, _RETRIEVE_MARKERS)
+    wants_rates = _has(lowered, _RATE_LOOKUP_MARKERS)
+
+    # A rate-table request -- but ONLY when no income is stated. "What are the
+    # slab rates?" is a lookup; "my salary is 21L, what rate applies?" states an
+    # income and should compute. So a stated income (or an explicit compute
+    # phrasing) always wins over the rate-lookup markers.
+    if wants_rates and not income_stated and not wants_number:
+        return Intent.RATE_LOOKUP
+
+    # A deduction/rebate LIMIT lookup: names a specific section AND asks how much
+    # (the limit cue), with no income stated. "What is the 80D limit?" -> the
+    # figure from slab_tables; "explain 80D" -> retrieval, because it lacks the
+    # cue. The figure is a fact in the tables, so answer it deterministically
+    # rather than sending it to the figure-banned LLM.
+    if (
+        not income_stated
+        and not wants_number
+        and not _has(lowered, _ELIGIBILITY_MARKERS)
+        and _has(lowered, _LIMIT_CUE)
+        and detect_deduction_query(query)
+    ):
+        return Intent.DEDUCTION_LOOKUP
 
     # A stated income settles it: the figure is an input, so compute on it.
     # Where the user ALSO asks what the law says -- "I earn 21 lakhs, can I

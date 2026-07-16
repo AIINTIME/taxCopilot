@@ -28,8 +28,10 @@ from app.orchestration.nodes.audit_log_node import write_audit_log
 from app.orchestration.nodes.computation_citations import resolve_computation_citations
 from app.orchestration.state import QueryGraphState
 from app.services.computation.engine import compute
+from app.services.computation.rules.personal.slab_tables import PersonalRegime
 from app.services.query.input_extractor import clarification_questions, extract_inputs
 from app.services.query.intent_classifier import Intent, classify_intent
+from app.services.query.rate_lookup import build_deduction_card, build_rate_card
 from app.services.query.temporal_resolver import resolve_as_of
 from app.services.rag.evidence_gate import verify_citations
 from app.services.rag.llm_client import generate_narrative
@@ -83,6 +85,31 @@ async def _resolve_temporal_node(state: QueryGraphState) -> dict:
 async def _clarify_node(state: QueryGraphState) -> dict:
     # Nothing is asserted, so there is nothing to verify or cite.
     return {"gate_status": "VERIFIED", "gated_citations": []}
+
+
+def _regime_in_query(query: str) -> PersonalRegime | None:
+    lowered = query.lower()
+    new_hit = "new regime" in lowered or "new tax regime" in lowered or "115bac" in lowered
+    old_hit = "old regime" in lowered or "old tax regime" in lowered
+    if new_hit and not old_hit:
+        return PersonalRegime.NEW
+    if old_hit and not new_hit:
+        return PersonalRegime.OLD
+    return None
+
+
+async def _rate_lookup_node(state: QueryGraphState) -> dict:
+    # Figures read straight from slab_tables -- no LLM, so the figure ban does
+    # not apply and cannot block the answer. VERIFIED because the rate table is
+    # authoritative and source-referenced, the same basis as computation.
+    card = build_rate_card(state["as_of"], _regime_in_query(state["query"]))
+    return {"rate_card": card, "gate_status": "VERIFIED", "gated_citations": []}
+
+
+async def _deduction_lookup_node(state: QueryGraphState) -> dict:
+    # Deduction/rebate limits, same authoritative-table basis as rate_lookup.
+    card = build_deduction_card(state["as_of"], state["query"])
+    return {"deduction_card": card, "gate_status": "VERIFIED", "gated_citations": []}
 
 
 async def _computation_node(state: QueryGraphState) -> dict:
@@ -155,6 +182,10 @@ async def _evidence_gate_node(state: QueryGraphState) -> dict:
 def _route_after_temporal(state: QueryGraphState) -> str:
     if state.get("missing"):
         return "clarify"
+    if state["intent"] == Intent.RATE_LOOKUP:
+        return "rate_lookup"
+    if state["intent"] == Intent.DEDUCTION_LOOKUP:
+        return "deduction_lookup"
     if state["intent"] == Intent.RETRIEVAL:
         return "retrieval"
     return "computation"
@@ -170,6 +201,8 @@ def build_query_graph():
     graph.add_node("extract_inputs", _extract_inputs_node)
     graph.add_node("resolve_temporal", _resolve_temporal_node)
     graph.add_node("clarify", _clarify_node)
+    graph.add_node("rate_lookup", _rate_lookup_node)
+    graph.add_node("deduction_lookup", _deduction_lookup_node)
     graph.add_node("computation", _computation_node)
     graph.add_node("computation_citations", resolve_computation_citations)
     graph.add_node("retrieval", _retrieval_node)
@@ -187,12 +220,16 @@ def build_query_graph():
         _route_after_temporal,
         {
             "clarify": "clarify",
+            "rate_lookup": "rate_lookup",
+            "deduction_lookup": "deduction_lookup",
             "computation": "computation",
             "retrieval": "retrieval",
         },
     )
 
     graph.add_edge("clarify", "assemble_response")
+    graph.add_edge("rate_lookup", "assemble_response")
+    graph.add_edge("deduction_lookup", "assemble_response")
     graph.add_edge("computation", "computation_citations")
     graph.add_conditional_edges(
         "computation_citations",

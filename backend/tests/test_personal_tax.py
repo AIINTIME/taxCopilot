@@ -531,3 +531,43 @@ class TestEngineDispatch:
     def test_unknown_rule_names_are_rejected_clearly(self):
         with pytest.raises(KeyError):
             compute("no_such_rule", {}, AY_2026_27)
+
+
+class TestRateLookup:
+    """Phase 11: rate-table questions answered from slab_tables, not the LLM."""
+
+    def test_ay_2025_26_new_regime_bands(self):
+        from app.services.query.rate_lookup import build_rate_card
+        from app.services.computation.rules.personal.slab_tables import PersonalRegime
+
+        ctx = AY_2026_27.model_copy(
+            update={
+                "assessment_year": AssessmentYear(ay="2025-26", financial_year="2024-25")
+            }
+        )
+        card = build_rate_card(ctx, PersonalRegime.NEW)
+        assert card["available"]
+        new = card["regimes"][0]
+        # AY 2025-26 new regime: 0-3L nil, 3-7L 5%, 7-10L 10%, 10-12L 15%,
+        # 12-15L 20%, >15L 30% -- materially different from 2026-27.
+        assert [b["rate"] for b in new["bands"]] == ["0%", "5%", "10%", "15%", "20%", "30%"]
+        assert new["rebate_87a_income_limit"] == 700_000
+        assert new["rebate_87a_max"] == 25_000
+
+    def test_both_regimes_when_unspecified(self):
+        from app.services.query.rate_lookup import build_rate_card
+
+        card = build_rate_card(AY_2026_27)
+        assert {r["regime"] for r in card["regimes"]} == {"new", "old"}
+
+    def test_unseeded_year_is_reported_not_guessed(self):
+        from app.services.query.rate_lookup import build_rate_card
+
+        ctx = AY_2026_27.model_copy(
+            update={
+                "assessment_year": AssessmentYear(ay="2099-00", financial_year="2098-99")
+            }
+        )
+        card = build_rate_card(ctx)
+        assert card["available"] is False
+        assert card["regimes"] == []

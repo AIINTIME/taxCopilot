@@ -79,7 +79,75 @@ class TestIntentClassifier:
     def test_an_amount_owned_by_a_section_is_not_an_income(self):
         # The counterweight: routing on "there is a number" would drag every
         # law question that quotes a threshold into the computation branch.
-        assert classify_intent("what is the 80C limit of 1.5 lakh") is Intent.RETRIEVAL
+        # "What is the 80C limit" is a deduction-limit lookup (answered from the
+        # tables); the 1.5 lakh is the answer, not the taxpayer's income, so the
+        # key property is that it is NOT a computation.
+        assert classify_intent("what is the 80C limit of 1.5 lakh") is Intent.DEDUCTION_LOOKUP
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "What are the income tax slab rates for the new regime for AY 2025-26?",
+            "tax slabs for AY 2026-27",
+            "show me the new regime rates",
+            "income tax rate for old regime",
+        ],
+    )
+    def test_rate_table_questions_route_to_rate_lookup(self, query):
+        # The bug that prompted this: a rate-table question is a figure lookup,
+        # but with no income it went to the LLM -- which is forbidden from
+        # stating figures -- and answered "no information". Route it to
+        # slab_tables instead.
+        assert classify_intent(query) is Intent.RATE_LOOKUP
+
+    def test_a_stated_income_beats_the_rate_markers(self):
+        # "my salary is 21L, what rate applies" states an income: compute, do
+        # not just show the table.
+        assert classify_intent("my salary is 21 lakhs, what tax rate applies") in (
+            Intent.COMPUTATION,
+            Intent.BOTH,
+        )
+
+    def test_explain_is_a_retrieval_not_a_table_lookup(self):
+        # "explain the standard deduction" wants prose, not the rate table.
+        assert classify_intent("explain the standard deduction") is Intent.RETRIEVAL
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "What is the maximum deduction available under Section 80D for senior citizen parents?",
+            "What is the rebate limit under Section 87A?",
+            "how much is the 80C limit",
+            "what is the standard deduction limit",
+        ],
+    )
+    def test_deduction_limit_questions_route_to_deduction_lookup(self, query):
+        # These ask for a FIGURE that lives in slab_tables. Sent to retrieval
+        # they hit the figure ban and return "no information"; they must be
+        # answered from the tables instead.
+        assert classify_intent(query) is Intent.DEDUCTION_LOOKUP
+
+    def test_naming_a_section_without_a_limit_cue_stays_retrieval(self):
+        # "explain 80C" / "what does 80D cover" want prose, not the number.
+        assert classify_intent("explain Section 80C") is Intent.RETRIEVAL
+        assert classify_intent("what does Section 80D cover") is Intent.RETRIEVAL
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "Can a salaried individual claim both HRA exemption under Section 10(13A) and "
+            "home loan interest deduction under Section 24(b) in the same assessment year?",
+            "Am I eligible for 80C and 80D together?",
+            "what is the difference between 80C and 80D",
+        ],
+    )
+    def test_eligibility_questions_are_not_hijacked_by_the_limit_lookup(self, query):
+        # REGRESSION, found by re-running the question battery: the phrase
+        # "deduction under Section 24(b)" merely REFERS to a section, but it
+        # matched the limit cue, so an eligibility question was answered with a
+        # limits table -- a confident answer to a question nobody asked.
+        # Eligibility wants reasoning; it always beats the limit cue.
+        assert classify_intent(query) is Intent.RETRIEVAL
 
     @pytest.mark.parametrize(
         "query",
@@ -93,9 +161,10 @@ class TestIntentClassifier:
     def test_retrieval_queries(self, query):
         assert classify_intent(query) is Intent.RETRIEVAL
 
-    def test_an_amount_inside_a_law_question_stays_retrieval(self):
-        # The 1.5 lakh here is part of the question, not an input to compute on.
-        assert classify_intent("what is the 80C limit of 1.5 lakh") is Intent.RETRIEVAL
+    def test_an_amount_inside_a_lookup_is_not_treated_as_income(self):
+        # The 1.5 lakh is part of the question, not an input to compute on. It
+        # routes to the deduction-limit lookup, never to computation.
+        assert classify_intent("what is the 80C limit of 1.5 lakh") is not Intent.COMPUTATION
 
     def test_asking_for_both_a_figure_and_the_law(self):
         assert (

@@ -47,3 +47,6 @@ langgraph
 openpyxl
 python-docx>=1.0.0
 pytest>=8.0.0
+# Explicit, not transitive: shared/graph/neo4j_client.py builds its TLS trust
+# store from certifi because the Windows root store can lack Neo4j Aura's CA.
+certifi>=2024.2.2

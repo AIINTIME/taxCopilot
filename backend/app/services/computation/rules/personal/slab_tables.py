@@ -155,9 +155,54 @@ SLABS: dict[tuple[str, PersonalRegime], RegimeParams] = {
         source_reference="Finance Act, 2025 -- rates for AY 2026-27",
         allowed_deductions=_OLD_REGIME_ALLOWED,
     ),
+    # AY 2025-26 (FY 2024-25). The NEW-regime slabs differ materially from
+    # 2026-27 -- narrower bands, 87A limited to 7,00,000 (max 25,000) rather
+    # than 12,00,000 (max 60,000). Transcribed from the Income Tax Department's
+    # AY 2025-26 page, retrieved 2026-07-16:
+    #   incometax.gov.in/iec/foportal/help/individual/return-applicable-3
+    ("2025-26", PersonalRegime.NEW): RegimeParams(
+        bands=(
+            SlabBand(upper=300_000, rate=0.0),
+            SlabBand(upper=700_000, rate=0.05),
+            SlabBand(upper=1_000_000, rate=0.10),
+            SlabBand(upper=1_200_000, rate=0.15),
+            SlabBand(upper=1_500_000, rate=0.20),
+            SlabBand(upper=None, rate=0.30),
+        ),
+        surcharge_bands=_SURCHARGE_COMMON + (SurchargeBand(upper=None, rate=0.25),),
+        standard_deduction=75_000,
+        rebate_87a_income_limit=700_000,
+        rebate_87a_max=25_000,
+        rebate_87a_marginal_relief=True,
+        cess_rate=_CESS_RATE,
+        slab_section="Sec 115BAC(1A)",
+        standard_deduction_section="Sec 16(ia)",
+        source_reference="Finance (No. 2) Act, 2024 -- rates for AY 2025-26",
+        allowed_deductions=_NEW_REGIME_ALLOWED,
+    ),
+    ("2025-26", PersonalRegime.OLD): RegimeParams(
+        bands=(
+            SlabBand(upper=250_000, rate=0.0),
+            SlabBand(upper=500_000, rate=0.05),
+            SlabBand(upper=1_000_000, rate=0.20),
+            SlabBand(upper=None, rate=0.30),
+        ),
+        surcharge_bands=_SURCHARGE_COMMON + (SurchargeBand(upper=None, rate=0.37),),
+        standard_deduction=50_000,
+        rebate_87a_income_limit=500_000,
+        rebate_87a_max=12_500,
+        rebate_87a_marginal_relief=False,
+        cess_rate=_CESS_RATE,
+        slab_section="Sec 2(1) r/w First Schedule, Part I",
+        standard_deduction_section="Sec 16(ia)",
+        source_reference="Finance (No. 2) Act, 2024 -- rates for AY 2025-26",
+        allowed_deductions=_OLD_REGIME_ALLOWED,
+    ),
 }
 
 DEDUCTION_LIMITS: dict[str, DeductionLimits] = {
+    # Chapter VI-A limits are stable across these years; kept as separate
+    # entries so each AY resolves independently rather than falling back.
     "2026-27": DeductionLimits(
         section_80c=150_000,
         section_80d_self=25_000,
@@ -165,6 +210,14 @@ DEDUCTION_LIMITS: dict[str, DeductionLimits] = {
         section_80tta=10_000,
         home_loan_interest_24b=200_000,
         source_reference="Income-tax Act, 1961 -- Chapter VI-A limits, AY 2026-27",
+    ),
+    "2025-26": DeductionLimits(
+        section_80c=150_000,
+        section_80d_self=25_000,
+        section_80d_parents_senior=50_000,
+        section_80tta=10_000,
+        home_loan_interest_24b=200_000,
+        source_reference="Income-tax Act, 1961 -- Chapter VI-A limits, AY 2025-26",
     ),
 }
 

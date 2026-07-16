@@ -48,6 +48,14 @@ class QueryResponse(BaseModel):
     # on an invented input is worse than not computing.
     clarification_needed: bool = False
 
+    # Slab-rate table for a "what are the rates for AY X?" question, read from
+    # slab_tables (never the LLM). None for every other query type.
+    rate_card: dict | None = None
+
+    # Deduction/rebate limit table for a "what is the 80D limit?" question,
+    # also read from slab_tables. None for every other query type.
+    deduction_card: dict | None = None
+
 
 @router.post("/{domain}/query", response_model=QueryResponse)
 async def query(domain: str, payload: QueryRequest, user=Depends(get_current_user)):

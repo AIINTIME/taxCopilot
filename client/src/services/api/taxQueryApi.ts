@@ -41,6 +41,29 @@ type ComputationTrace = {
 
 export type GateStatus = 'VERIFIED' | 'PARTIAL' | 'FLAGGED'
 
+type RegimeCard = {
+  regime: string
+  slab_section: string
+  bands: { range: string; rate: string }[]
+  standard_deduction: number
+  rebate_87a_income_limit: number
+  rebate_87a_max: number
+  cess_rate: number
+  source_reference: string
+}
+
+type RateCard = {
+  assessment_year: string
+  available: boolean
+  regimes: RegimeCard[]
+}
+
+type DeductionCard = {
+  assessment_year: string
+  available: boolean
+  entries: { item: string; limit: string; note: string; source_reference: string }[]
+}
+
 export type QueryResponse = {
   answer: string
   citations: Citation[]
@@ -51,6 +74,8 @@ export type QueryResponse = {
   uncited_sections: string[]
   assumptions: string[]
   clarification_needed: boolean
+  rate_card: RateCard | null
+  deduction_card: DeductionCard | null
 }
 
 function money(value: number) {
@@ -67,11 +92,17 @@ function num(outputs: Record<string, unknown>, key: string): number | null {
 }
 
 /**
- * The response carries no calibrated confidence, so the gate status is the only
- * honest signal available for the warnings widget's percentage. Mapped
- * explicitly rather than invented: VERIFIED means every citation checked out
- * (or a computation asserted nothing needing one), FLAGGED means citations were
- * offered and none survived verification.
+ * The confidence percentage shown on the Caveats widget.
+ *
+ * The response carries no separately calibrated confidence, so gate status is
+ * the only honest signal available. Mapped explicitly rather than invented:
+ * VERIFIED = every citation checked out against the retrieved chunks (or the
+ * answer is a computation/lookup that asserts nothing needing one); PARTIAL =
+ * some citations survived verification and some were stripped; FLAGGED =
+ * citations were offered and none could be verified.
+ *
+ * It measures CITATION VERIFICATION, not whether the figures are right — those
+ * come from slab_tables via pure functions and are exact regardless.
  */
 const GATE_CONFIDENCE: Record<GateStatus, number> = {
   VERIFIED: 100,
@@ -192,7 +223,41 @@ function breakevenWidget(trace: ComputationTrace): ResponseWidget | null {
   }
 }
 
-function warningsWidget(response: QueryResponse): ResponseWidget | null {
+function rateCardWidgets(card: RateCard): ResponseWidget[] {
+  if (!card.available) return []
+
+  // One table per regime, straight from the backend's slab_tables read. Every
+  // figure here is authoritative and source-referenced; nothing is narrated.
+  return card.regimes.map((r) => ({
+    id: createId('widget'),
+    type: 'table' as const,
+    title: `${r.regime === 'new' ? 'New' : 'Old'} regime slabs — AY ${card.assessment_year} (${r.slab_section})`,
+    table: {
+      columns: ['Income', 'Rate'],
+      rows: [
+        ...r.bands.map((b) => [b.range, b.rate]),
+        ['Standard deduction (salaried)', money(r.standard_deduction)],
+        [`Sec 87A rebate (income ≤ ${money(r.rebate_87a_income_limit)})`, `up to ${money(r.rebate_87a_max)}`],
+        ['Health & Education cess', `${(r.cess_rate * 100).toFixed(0)}%`],
+      ],
+    },
+  }))
+}
+
+function deductionCardWidget(card: DeductionCard): ResponseWidget | null {
+  if (!card.available) return null
+  return {
+    id: createId('widget'),
+    type: 'table',
+    title: `Deduction & rebate limits — AY ${card.assessment_year}`,
+    table: {
+      columns: ['Item', 'Limit', 'Notes'],
+      rows: card.entries.map((e) => [e.item, e.limit, e.note]),
+    },
+  }
+}
+
+function caveatsWidget(response: QueryResponse): ResponseWidget | null {
   const items: WarningItem[] = []
 
   // A computation is VERIFIED because its figures come from pure functions over
@@ -255,6 +320,19 @@ export function widgetsFromQueryResponse(response: QueryResponse): ResponseWidge
   // comparison beside it would imply a computation that never ran.
   if (response.clarification_needed) return widgets
 
+  // A rate-lookup answer is the slab tables themselves, not a computation.
+  if (response.rate_card) {
+    widgets.push(...rateCardWidgets(response.rate_card))
+    return widgets
+  }
+
+  // A deduction/rebate limit lookup, likewise read from the tables.
+  if (response.deduction_card) {
+    const widget = deductionCardWidget(response.deduction_card)
+    if (widget) widgets.push(widget)
+    return widgets
+  }
+
   const trace = response.computation_trace
   if (trace) {
     const comparison = comparisonWidget(trace)
@@ -270,8 +348,8 @@ export function widgetsFromQueryResponse(response: QueryResponse): ResponseWidge
   const citations = citationsWidget(response)
   if (citations) widgets.push(citations)
 
-  const warnings = warningsWidget(response)
-  if (warnings) widgets.push(warnings)
+  const caveats = caveatsWidget(response)
+  if (caveats) widgets.push(caveats)
 
   return widgets
 }

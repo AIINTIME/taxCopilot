@@ -10,10 +10,33 @@ narrated figure overwrite a computed one, because they are not merged at all.
 from app.orchestration.state import QueryGraphState
 
 
+def _rate_card_answer(card: dict) -> str:
+    ay = card.get("assessment_year")
+    if not card.get("available"):
+        return (
+            f"Slab rates for AY {ay} are not available yet. "
+            f"Ask about a supported assessment year."
+        )
+    regimes = ", ".join(r["regime"] for r in card.get("regimes") or [])
+    return (
+        f"Income-tax slab rates for AY {ay} ({regimes} regime"
+        f"{'s' if len(card.get('regimes') or []) > 1 else ''}) are shown below."
+    )
+
+
 def _fallback_answer(state: QueryGraphState) -> str:
     """Answer text when no LLM narration ran (pure computation, or clarification)."""
     if state.get("clarification"):
         return state["clarification"]
+
+    if state.get("rate_card"):
+        return _rate_card_answer(state["rate_card"])
+
+    if state.get("deduction_card"):
+        card = state["deduction_card"]
+        if not card.get("available"):
+            return "That deduction limit is not available in the rate tables yet."
+        return f"Deduction and rebate limits for AY {card['assessment_year']} are shown below."
 
     outputs = (state.get("computation_trace") or {}).get("outputs") or {}
     if not outputs:
@@ -71,6 +94,8 @@ async def assemble_response(state: QueryGraphState) -> dict:
             "uncited_sections": state.get("uncited_sections") or [],
             "assumptions": state.get("assumptions") or [],
             "clarification_needed": bool(state.get("clarification")),
+            "rate_card": state.get("rate_card"),
+            "deduction_card": state.get("deduction_card"),
             "gate_status": state.get("gate_status") or "VERIFIED",
             "as_of_date": state["as_of"].as_of_date,
         }

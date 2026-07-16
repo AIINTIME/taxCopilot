@@ -35,6 +35,14 @@ class QueryGraphState(TypedDict, total=False):
     computation_result: dict[str, Any] | None
     computation_trace: dict[str, Any] | None
 
+    # Rate-table lookup ("what are the slab rates for AY X?") -- read from
+    # slab_tables, never the LLM. See services/query/rate_lookup.py.
+    rate_card: dict[str, Any] | None
+
+    # Deduction/rebate limit lookup ("what is the 80D limit?") -- also from
+    # slab_tables, same reason.
+    deduction_card: dict[str, Any] | None
+
     # Sections the computation trace cited that the rule graph could not
     # resolve to a source. Surfaced on the response so an answer with no
     # citations is visibly uncited rather than silently so.
