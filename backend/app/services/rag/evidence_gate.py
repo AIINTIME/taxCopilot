@@ -12,11 +12,23 @@ from app.shared.schemas.audit_entry import GateStatusLiteral
 def verify_citations(
     citations: list[Citation], retrieved_chunks: list[RetrievedChunk]
 ) -> tuple[list[Citation], GateStatusLiteral]:
-    raise NotImplementedError(
-        "TODO: for each citation, confirm chunk_id is present in "
-        "retrieved_chunks and the excerpt is actually supported by that "
-        "chunk's content. Strip unverifiable citations; return gate_status="
-        "'FLAGGED' (never silently drop) if any were stripped, else "
-        "'VERIFIED' (or 'PARTIAL' if some citations were unverifiable but "
-        "others verified)"
-    )
+    if not citations:
+        return [], "VERIFIED"
+
+    chunks_by_id = {chunk.chunk_id: chunk for chunk in retrieved_chunks}
+    verified_citations: list[Citation] = []
+    any_stripped = False
+
+    for citation in citations:
+        chunk = chunks_by_id.get(citation.chunk_id)
+        supported = chunk is not None and citation.excerpt.lower() in chunk.content.lower()
+        if supported:
+            verified_citations.append(citation.model_copy(update={"verified": True}))
+        else:
+            any_stripped = True
+
+    if not any_stripped:
+        return verified_citations, "VERIFIED"
+    if verified_citations:
+        return verified_citations, "PARTIAL"
+    return verified_citations, "FLAGGED"

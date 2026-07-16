@@ -48,10 +48,28 @@ model User {
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
   authLogs        AuthEventLog[]
+  queryDocuments  UserQueryDocument[]
 
   @@index([email])
   @@index([adminId])
   @@index([organizationId])
+}
+
+/// A user's own uploaded document for a single query/session (e.g. a sale
+/// deed or broker contract note) -- kept separate from the admin-only
+/// `Document` model, which feeds the permanent statutory knowledge graph.
+/// Never mixed with the statutory-kg namespace.
+model UserQueryDocument {
+  id            String         @id @default(uuid())
+  userId        String
+  user          User           @relation(fields: [userId], references: [id])
+  filename      String
+  contentHash   String
+  extractedText String
+  status        DocumentStatus @default(PROCESSING)
+  createdAt     DateTime       @default(now())
+
+  @@index([userId])
 }
 
 model AuthEventLog {

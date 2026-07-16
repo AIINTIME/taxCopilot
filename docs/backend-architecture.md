@@ -24,8 +24,9 @@ Postgres (parsed P&L / balance sheet / GSTR fields) and run them through pure
 Python rule functions (MAT, regime comparison, depreciation, capital gains,
 etc.), producing an exact, auditable `computation_trace`. Retrieval queries
 go through a hybrid retriever (vector + keyword search) to pull statutory
-chunks, hand them to Claude — **the only LLM touchpoint in the entire
-system** — to draft a narrative with citation tags, and then run every
+chunks, hand them to the configured LLM provider — currently **OpenAI
+`gpt-4o`**, the only LLM touchpoint in the entire system — to draft a
+narrative with citation tags, and then run every
 citation through an **Evidence Gate** that verifies it against what was
 actually retrieved. Unverifiable claims are stripped and the response is
 flagged for human review, never silently dropped. Response Assembly merges
@@ -57,12 +58,16 @@ backend/
 │   │   ├── config.py
 │   │   ├── redis.py
 │   │   └── security.py       JWT helpers for both user and admin tokens
-│   ├── shared/             cross-cutting schemas + the LLM provider abstraction
+│   ├── shared/             cross-cutting schemas + LLM/embedding/vector/graph client boundaries
+│   │   ├── llm/               provider-agnostic LLM boundary (primary: OpenAI gpt-4o)
+│   │   ├── embeddings/        OpenAI embedding provider (NEW)
+│   │   ├── vector/            Pinecone client (NEW)
+│   │   └── graph/             Neo4j client (NEW)
 │   ├── services/           all business logic, organized by capability
 │   │   ├── query/          entrypoint, intent routing, temporal resolution
 │   │   ├── computation/    the deterministic tax rules engine
 │   │   ├── rag/            retrieval, LLM narration, citation verification
-│   │   └── ingestion/      scraping/upload → parse → embed → upsert
+│   │   └── ingestion/      scraping/upload → parse → embed → upsert → graph extraction (NEW)
 │   ├── orchestration/      LangGraph wiring only — no business logic
 │   ├── db.py               Prisma client
 │   ├── main.py             FastAPI app entry point (mounts all routers, seeds DB)
@@ -196,10 +201,16 @@ All routes require the `get_current_admin` dependency. Mounted at `/admin/*`:
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /admin/stats` | `total_users`, `total_audit_logs`, `total_provisions`, `security_alerts` |
-| `GET /admin/users` | Paginated list of all users (id, name, email, created_at) |
+| `GET /admin/stats` | `total_users`, `total_audit_logs`, `total_provisions`, `security_alerts` (hardcoded `0` — not yet implemented) |
+| `GET /admin/users` | Paginated list of users in the admin's org (id, name, email, created_at) |
+| `POST /admin/users` | Create a user directly under the calling admin (NEW) |
+| `PATCH /admin/users/{id}` | Update a user's name/email (NEW) |
+| `PATCH /admin/users/{id}/password` | Reset a user's password (NEW) |
+| `PATCH /admin/users/{id}/status` | Activate/deactivate a user (NEW) |
 | `GET /admin/audit-logs` | Recent AuditLog entries (id, userId, query, gateStatus, createdAt) |
-| `GET /admin/documents` | KnowledgeGraphProvision entries |
+| `POST /admin/documents/upload` | Upload a document; parses, chunks, embeds + upserts each chunk to Pinecone `statutory-kg`, and (best-effort) runs each chunk through `kg_graph_extraction` for rule proposals (NEW) |
+| `GET /admin/documents` | `Document` rows (filename, status, chunks embedded, uploader) — **not** `KnowledgeGraphProvision` as previously documented |
+| `GET /admin/rule-proposals` | `GraphRuleProposal` rows from the knowledge-graph extraction pipeline, optionally filtered by `status` (NEW) |
 
 ### `app/core/security.py` — JWT helpers (updated)
 
@@ -290,21 +301,42 @@ to agree on its shape.
 
 ### `app/shared/llm/` — the provider-agnostic LLM boundary
 
-This is the wall around the diagram's "Claude — Sonnet 5, ONLY LLM TOUCHPOINT
-IN SYSTEM" box.
+This is the wall around the diagram's "ONLY LLM TOUCHPOINT IN SYSTEM" box.
+The concrete provider behind that wall has already changed once (the diagram
+originally specified Claude/Anthropic); treat the provider identity as
+swappable, not the boundary itself.
 - `base.py` — the `LLMProvider` interface every provider implements
   (`generate(system_prompt, messages, temperature=0)`).
-- `anthropic_provider.py` — the **only file in the whole codebase** allowed
-  to import the Anthropic SDK. Hardcodes `temperature=0`.
-- `fallback_provider.py` — a second provider, same interface, for when Claude
-  is down/times out.
-- `router.py` — tries Claude, falls back on failure, and logs which provider
-  actually served the response for the audit trail.
+- `primary_provider.py` — the current primary provider. Imports
+  `AsyncOpenAI` and is the **only file in the whole codebase** allowed to
+  import the OpenAI SDK for text generation (embeddings have their own
+  isolated provider, see `shared/embeddings/`). Model defaults to `gpt-4o`
+  (`PRIMARY_LLM_MODEL` env var). Hardcodes `temperature=0`.
+- `fallback_provider.py` — same interface, for when the primary provider is
+  down/times out. Still an unimplemented stub — no secondary provider has
+  been chosen yet.
+- `router.py` — tries the primary provider, falls back on failure, and logs
+  which provider actually served the response for the audit trail.
 - `config.py` — API keys / model names, kept separate from `app/core/config.py`.
 
 **Never** import an LLM SDK anywhere else. If you're adding a new provider,
 it's a new file in this folder implementing `LLMProvider` — no other file
 changes.
+
+### `app/shared/embeddings/`, `app/shared/vector/`, `app/shared/graph/` — external service clients (NEW)
+
+Not part of the original scaffold — added as the corresponding "open design
+questions" from §5 got resolved (or, for the graph client, as new scope).
+Each follows the same "one file may import this SDK" pattern as `shared/llm/`:
+- `embeddings/openai_embedding_provider.py` — the only file allowed to import
+  the OpenAI SDK for embeddings (kept separate from `llm/primary_provider.py`,
+  which is generation-only). Model: `text-embedding-3-large`.
+- `vector/pinecone_client.py` — the only file allowed to import the pinecone
+  SDK. Namespaces `statutory-kg` and `user-docs`, matching the diagram.
+  Currently wired only on the ingestion **write** path
+  (`upsert/statutory_kg_upsert.py`) — see §5 for the read-path gap.
+- `graph/neo4j_client.py` — the only file allowed to import the neo4j SDK.
+  Backs `services/ingestion/kg_graph_extraction/`.
 
 ### `app/services/query/` — the entrypoint
 
@@ -343,7 +375,7 @@ passes it in as plain values.
   out to the vector DB and the structured/keyword DB, fused with Reciprocal
   Rank Fusion.
 - `evidence_gate.py` — the diagram's "Evidence Gate" diamond. Verifies every
-  citation Claude produced against the chunks actually retrieved for *this*
+  citation the LLM produced against the chunks actually retrieved for *this*
   query. Verified → `gate_status = VERIFIED`. Unverifiable → the claim is
   stripped and the response is flagged for human review — never silently dropped.
 - `confidence.py` — calibrated confidence score (retrieval score + source
@@ -352,7 +384,7 @@ passes it in as plain values.
   `shared/llm/`. Calls `router.get_llm_provider()`, never a provider module
   directly.
 - `prompts/` — system prompts and the citation-mandate instructions given to
-  Claude (grounding-only: it may never answer outside retrieved content).
+  the LLM (grounding-only: it may never answer outside retrieved content).
 - `external_research/allowlist.py` — the government domains ingestion is
   allowed to pull from (`incometax.gov.in`, `cbic-gst.gov.in`,
   `egazette.gov.in`, `mca.gov.in`).
@@ -365,16 +397,30 @@ passes it in as plain values.
 - `sources/gov_scraper.py` — pulls from allow-listed external tax sources.
 - `sources/upload_handler.py` — accepts user document uploads (P&L, GSTR,
   balance sheets).
-- `parsing/pdf_parser.py`, `parsing/xlsx_parser.py` — the diagram's
-  "Parse & chunk" step.
+- `parsing/pdf_parser.py`, `parsing/xlsx_parser.py`, `parsing/docx_parser.py`,
+  `parsing/text_parser.py` — the diagram's "Parse & chunk" step.
 - `dedup.py` — content-hash idempotency check. Already fully implemented.
-- `embedding.py` — text embedding calls (diagram specifies OpenAI
-  `text-embedding-3-large`). **Open design question** — see §5.
+- `embedding.py` — text embedding calls. Delegates to
+  `shared/embeddings/openai_embedding_provider.py` (OpenAI
+  `text-embedding-3-large`) — implemented, no SDK import in this file itself.
 - `upsert/statutory_kg_upsert.py` — writes into the permanent knowledge-graph
   namespace. **This is the only path new citable legal knowledge enters the
-  system through.**
+  system through.** Wired to `shared/vector/pinecone_client.py`, namespace
+  `statutory-kg`.
 - `upsert/user_docs_upsert.py` — writes into the session-scoped namespace.
   Never mixed with the statutory KG namespace.
+- `kg_graph_extraction/` — **not part of the original diagram.** Extracts
+  candidate statutory rules from ingested chunks and proposes them into the
+  Neo4j knowledge graph:
+  - `rule_proposal.py` — proposes a rule from a chunk and verifies the
+    proposal is backed by an evidence span in the source text.
+  - `graph_writer.py` — commits an approved rule proposal to Neo4j.
+  - `pipeline.py` — orchestrates propose → verify → commit for a single
+    chunk. Owns the `GRAPH_AUTO_APPROVE` flag: when `True` (current default),
+    an evidence-verified proposal is committed to Neo4j immediately; when
+    `False`, every proposal lands in `PENDING_REVIEW` for a human to check
+    first. This flag lives only in `pipeline.py` — do not replicate it
+    elsewhere.
 
 ### `app/orchestration/` — wiring only, no business logic
 
@@ -395,17 +441,34 @@ retrieval algorithm itself.
 
 ## 5. Where this scaffold differs from the diagram (read before building further)
 
-- **Vector store**: the diagram specifies **Pinecone** with two namespaces
-  (`statutory-kg`, `user-docs`). The current `vector_store.py` stub assumes
-  pgvector-via-Postgres instead, to avoid adding a new client/dependency
-  during scaffolding.
+- **Vector store — write/read split (unresolved gap, not just an open
+  question)**: the diagram specifies **Pinecone** with two namespaces
+  (`statutory-kg`, `user-docs`). The write path now matches the diagram —
+  `upsert/statutory_kg_upsert.py` writes to Pinecone via
+  `shared/vector/pinecone_client.py`. But the read path,
+  `retriever/vector_store.py`, is still the old pgvector-via-Postgres stub
+  and is unimplemented (`raise NotImplementedError`). Until it's rewritten to
+  query Pinecone, anything ingestion writes is unreachable by retrieval —
+  **close this gap before relying on retrieval working end-to-end.**
 - **Gate status naming**: the diagram's Evidence Gate uses
   `VERIFIED` / `REVIEW_REQUIRED`. The current `GateStatus` enum uses
-  `VERIFIED` / `FLAGGED` / `PARTIAL`. Reconcile before wiring `evidence_gate.py`.
-- **Embedding provider**: the diagram specifies OpenAI `text-embedding-3-large`.
-  `ingestion/embedding.py` deliberately has no SDK import yet. Decide whether
-  embeddings get their own provider-isolated module (e.g.
-  `shared/embeddings/openai_embedding_provider.py`) before implementing.
+  `VERIFIED` / `FLAGGED` / `PARTIAL`. Still unreconciled — `evidence_gate.py`
+  is still an unimplemented stub.
+- **Embedding provider**: resolved. `shared/embeddings/openai_embedding_provider.py`
+  is implemented and wired into `ingestion/embedding.py`, matching the
+  diagram's OpenAI `text-embedding-3-large`.
+- **Primary LLM provider**: the diagram specifies Claude. The current
+  `primary_provider.py` calls OpenAI `gpt-4o` instead — see
+  `app/shared/llm/` above. Reconcile (or update the diagram) before treating
+  "Claude" as accurate anywhere else in this doc or the system prompts under
+  `services/rag/prompts/`.
+- **Knowledge-graph extraction (Neo4j)**: not in the original diagram at all.
+  `services/ingestion/kg_graph_extraction/` + `shared/graph/neo4j_client.py`
+  propose and (depending on `GRAPH_AUTO_APPROVE`) auto-commit statutory rules
+  into a Neo4j graph, backed by the new `GraphRuleProposal`/`ProposalStatus`
+  and `Document`/`DocumentStatus` Prisma models. If this is meant to become
+  the system's second knowledge source alongside the Pinecone `statutory-kg`
+  namespace, the diagram should be updated to show it.
 
 ---
 
@@ -415,7 +478,7 @@ retrieval algorithm itself.
 |-------------------------------------------------------|----------------------------------------------------------|
 | A new statutory computation (e.g. Sec 80-IAC)         | `services/computation/rules/<new_rule>.py`               |
 | A new allow-listed government source                  | `services/rag/external_research/allowlist.py`            |
-| A new document type to parse (e.g. .docx)             | `services/ingestion/parsing/<new>_parser.py`             |
+| A new document type to parse (e.g. .pptx)             | `services/ingestion/parsing/<new>_parser.py`             |
 | A change to how citations are verified                | `services/rag/evidence_gate.py`                          |
 | A change to the LLM prompt / citation mandate         | `services/rag/prompts/`                                  |
 | A second LLM provider (e.g. as the real fallback)     | `shared/llm/fallback_provider.py` only                   |
@@ -425,3 +488,5 @@ retrieval algorithm itself.
 | A new admin dashboard endpoint                        | `app/api/admin.py`                                       |
 | A new organization (tenant)                           | Add to `SEED_ORGS` list in `app/main.py`                 |
 | A new admin-specific JWT operation                    | `app/core/security.py` (follow existing admin token pattern) |
+| A new rule-proposal / graph-extraction source          | `services/ingestion/kg_graph_extraction/`                |
+| A new vector-store backend (replacing/adding to Pinecone) | `shared/vector/<new>_client.py` (rewrite `retriever/vector_store.py` to call it) |

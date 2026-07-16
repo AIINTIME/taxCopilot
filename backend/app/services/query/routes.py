@@ -5,6 +5,7 @@ work to the LangGraph query graph in orchestration/.
 """
 
 from datetime import date
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -16,16 +17,34 @@ from app.shared.schemas.citation import Citation
 router = APIRouter(prefix="/api/v1", tags=["query"])
 
 
+class ComputationRequest(BaseModel):
+    """Structured computation payload, e.g. {"rule_name": "capital_gains",
+    "inputs": {...}} -- bypasses free-text parsing entirely, since a pure
+    rule function can never guess a sourced number out of a sentence. See
+    services/computation/engine.py's RULES for valid rule_name values and
+    each rule's *Input dataclass for valid `inputs` keys.
+    """
+
+    rule_name: str
+    inputs: dict[str, Any]
+
+
 class QueryRequest(BaseModel):
     query: str
     as_of_date: date | None = None
     session_id: str | None = None
+    computation_request: ComputationRequest | None = None
+    # Raw text of a document the user uploaded with this query (e.g. a sale
+    # deed) -- extracted fields are evidence-span verified against this text
+    # before use (services/rag/extraction/document_extraction.py).
+    uploaded_document_text: str | None = None
 
 
 class QueryResponse(BaseModel):
     answer: str
     citations: list[Citation]
     computation_trace: dict | None = None
+    ground_truth_check: dict | None = None
     gate_status: str
     as_of_date: date
     audit_log_id: str

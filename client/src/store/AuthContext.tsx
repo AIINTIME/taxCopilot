@@ -2,6 +2,7 @@ import { createContext, useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { authApi } from '../services/api/authApi'
 import type { AuthUser } from '../services/api/authApi'
+import { setAccessToken as setSharedAccessToken } from '../services/api/authToken'
 
 type AuthContextValue = {
   user: AuthUser | null
@@ -32,11 +33,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!isMounted) return
         setUser(response.user)
         setAccessToken(response.access_token)
+        setSharedAccessToken(response.access_token)
       })
       .catch(() => {
         if (!isMounted) return
         setUser(null)
         setAccessToken(null)
+        setSharedAccessToken(null)
       })
       .finally(() => {
         if (isMounted) setIsLoading(false)
@@ -51,18 +54,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const response = await authApi.login({ email, password, organization_id: organizationId })
     setUser(response.user)
     setAccessToken(response.access_token)
+    setSharedAccessToken(response.access_token)
   }, [])
 
   const register = useCallback(async (name: string, email: string, password: string, organizationId: string) => {
     const response = await authApi.register({ name, email, password, organization_id: organizationId })
     setUser(response.user)
     setAccessToken(response.access_token)
+    setSharedAccessToken(response.access_token)
   }, [])
 
   const logout = useCallback(async () => {
     await authApi.logout().catch(() => undefined)
     setUser(null)
     setAccessToken(null)
+    setSharedAccessToken(null)
   }, [])
 
   const updateProfile = useCallback(
