@@ -1,148 +1,57 @@
-"""Reciprocal Rank Fusion over the vector, keyword, and graph stores.
-
-Fans out to Pinecone (semantic), Postgres FTS (lexical), and Neo4j (structured)
-and fuses their rankings with RRF. RRF is used rather than score-weighting
-because the three stores' scores are not comparable -- cosine similarity,
-ts_rank, and a graph match live on different scales -- while their RANKS are.
-
-DEGRADES, NEVER FAILS. Every store is currently expected to be partially or
-wholly unavailable in normal operation: Neo4j Aura Free auto-pauses after three
-days idle, and KnowledgeGraphProvision has no rows because nothing writes it
-yet. A retrieval that returned nothing because one leg was asleep -- or worse,
-raised and took the whole query down -- would be a much bigger problem than a
-slightly thinner result set. So each leg is gathered with return_exceptions and
-a failure degrades that leg to empty, logged at warning.
-
-The graph leg is not a ranker here. It backfills `section_reference` onto
-chunks the other stores found, via the chunk_id join in graph_store. That is
-the vector/vectorless bridge: Pinecone knows WHICH chunk is relevant, the graph
-knows WHAT SECTION that chunk states.
+"""Reciprocal Rank Fusion of vector_store (semantic, Pinecone) + graph_store
+(structured, Neo4j) results, filtered by the resolved as-of date/regime.
 """
 
 import asyncio
-import logging
 
 from pydantic import BaseModel
 
-from app.services.rag.retriever.graph_store import sections_for_chunks
-from app.services.rag.retriever.keyword_store import keyword_search
-from app.services.rag.retriever.vector_store import similarity_search
+from app.services.rag.retriever.graph_store import structured_search
+from app.services.rag.retriever.vector_store import embed_query, similarity_search
 from app.shared.schemas.tax_year import TaxYearContext
 
-logger = logging.getLogger(__name__)
-
-# Standard RRF damping. Large enough that a top rank does not dominate the sum,
-# so a chunk found by two stores at middling rank can outrank one found by a
-# single store at rank 1 -- which is the point of fusing at all.
-RRF_K = 60
-
-# Seconds to wait on the graph before answering without section labels.
-GRAPH_BACKFILL_TIMEOUT_S = 2.0
+# Standard RRF damping constant -- large enough that a single source's rank-1
+# result doesn't automatically dominate a result found by both sources.
+_RRF_K = 60
 
 
 class RetrievedChunk(BaseModel):
     chunk_id: str
     source_id: str
+    document_id: str | None = None
     content: str
     section_reference: str | None = None
     score: float
 
 
-def _settle(result: list[dict] | BaseException, store: str) -> list[dict]:
-    if isinstance(result, BaseException):
-        logger.warning("%s retrieval failed, degrading to empty: %s", store, result)
-        return []
-    return result
-
-
-def reciprocal_rank_fusion(
-    ranked_lists: list[list[dict]], k: int = RRF_K
-) -> list[dict]:
-    """Fuse ranked lists by summing 1/(k + rank) per chunk_id.
-
-    Returns dicts carrying the fused score, ordered best-first. Note the fused
-    score is NOT on the same scale as any input score (a cosine of 0.66 becomes
-    an RRF contribution of ~0.016) -- it is a ranking quantity only, and must
-    not be shown to a user or thresholded as if it were a similarity.
-    """
-    scores: dict[str, float] = {}
-    docs: dict[str, dict] = {}
-
-    for ranked in ranked_lists:
-        for rank, doc in enumerate(ranked, start=1):
-            chunk_id = doc.get("chunk_id")
-            if not chunk_id:
-                continue
-            scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank)
-            # First writer wins: stores earlier in the list supply the content.
-            docs.setdefault(chunk_id, doc)
-
-    return [
-        {**docs[chunk_id], "score": score}
-        for chunk_id, score in sorted(
-            scores.items(), key=lambda item: item[1], reverse=True
-        )
-    ]
-
-
 async def hybrid_search(
     query: str, as_of: TaxYearContext, top_k: int = 10
 ) -> list[RetrievedChunk]:
-    # Over-fetch each leg so fusion has room to reorder; fusing two top-10s
-    # then cutting to 10 would mostly reproduce whichever leg ranked first.
-    fetch_k = top_k * 2
-
-    vector_result, keyword_result = await asyncio.gather(
-        similarity_search(query, as_of, fetch_k),
-        keyword_search(query, as_of, fetch_k),
-        return_exceptions=True,
+    query_embedding = await embed_query(query)
+    vector_results, structured_results = await asyncio.gather(
+        similarity_search(query_embedding, as_of, top_k=top_k),
+        structured_search(query, as_of, top_k=top_k),
     )
 
-    vector_hits = _settle(vector_result, "vector_store")
-    keyword_hits = _settle(keyword_result, "keyword_store")
+    rrf_scores: dict[str, float] = {}
+    chunk_data: dict[str, dict] = {}
 
-    if not vector_hits and not keyword_hits:
-        return []
+    for rank_list in (vector_results, structured_results):
+        for rank, item in enumerate(rank_list, start=1):
+            chunk_id = item["chunk_id"]
+            rrf_scores[chunk_id] = rrf_scores.get(chunk_id, 0.0) + 1.0 / (_RRF_K + rank)
+            chunk_data.setdefault(chunk_id, item)
 
-    fused = reciprocal_rank_fusion([vector_hits, keyword_hits])[:top_k]
-
-    sections = await _sections_best_effort([d["chunk_id"] for d in fused])
+    ranked_ids = sorted(rrf_scores, key=lambda cid: rrf_scores[cid], reverse=True)[:top_k]
 
     return [
         RetrievedChunk(
-            chunk_id=doc["chunk_id"],
-            source_id=doc.get("source_id", ""),
-            content=doc.get("content", ""),
-            section_reference=doc.get("section_reference")
-            or sections.get(doc["chunk_id"]),
-            score=doc["score"],
+            chunk_id=cid,
+            source_id=chunk_data[cid]["source_id"],
+            document_id=chunk_data[cid].get("document_id"),
+            content=chunk_data[cid]["content"],
+            section_reference=chunk_data[cid]["section_reference"],
+            score=rrf_scores[cid],
         )
-        for doc in fused
+        for cid in ranked_ids
     ]
-
-
-async def _sections_best_effort(chunk_ids: list[str]) -> dict[str, str]:
-    """Graph section backfill. An unreachable or empty graph costs section
-    labels, not results -- so it must never propagate.
-
-    The timeout is not belt-and-braces. The neo4j driver retries a failed
-    transaction with exponential backoff for up to max_transaction_retry_time
-    (30s by default), so an Aura instance that has auto-paused makes every
-    single query hang for half a minute before this except clause is even
-    reached. Since this leg only decorates results with section labels, waiting
-    on it is never worth more than a moment.
-    """
-    try:
-        return await asyncio.wait_for(
-            sections_for_chunks(chunk_ids), timeout=GRAPH_BACKFILL_TIMEOUT_S
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "graph_store section backfill timed out after %ss; "
-            "returning chunks without section labels",
-            GRAPH_BACKFILL_TIMEOUT_S,
-        )
-        return {}
-    except Exception as exc:
-        logger.warning("graph_store section backfill failed: %s", exc)
-        return {}

@@ -10,6 +10,7 @@ type AppAction =
   | { type: 'set-active'; conversationId: string }
   | { type: 'upsert-conversation'; conversation: Conversation }
   | { type: 'add-message'; conversationId: string; message: Message }
+  | { type: 'replace-message'; conversationId: string; messageId: string; message: Message }
   | { type: 'update-conversation'; conversation: Conversation }
   | { type: 'set-attachments'; attachments: Attachment[] }
   | { type: 'set-thinking'; isThinking: boolean }
@@ -101,6 +102,23 @@ function reducer(state: AppState, action: AppAction): AppState {
               : conversation.title,
           updatedAt: action.message.createdAt,
           messages: [...conversation.messages, action.message],
+        }
+      }),
+    }
+  }
+
+  if (action.type === 'replace-message') {
+    return {
+      ...state,
+      conversations: state.conversations.map((conversation) => {
+        if (conversation.id !== action.conversationId) return conversation
+
+        return {
+          ...conversation,
+          updatedAt: action.message.createdAt,
+          messages: conversation.messages.map((message) =>
+            message.id === action.messageId ? action.message : message,
+          ),
         }
       }),
     }
@@ -267,6 +285,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       dispatch({ type: 'set-follow-ups', followUps: [] })
 
       try {
+        if (!accessToken) throw new Error('You need to log in again')
         const response = returnFile
           ? await taxApi.analyzeReturn(returnFile, accessToken)
           : await taxApi.sendPrompt(
@@ -298,6 +317,47 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     }
   }, [activeConversation, sendPrompt])
 
+  const regenerateResponse = useCallback(
+    async (assistantMessageId: string) => {
+      const conversation = activeConversation
+      if (!conversation) return
+
+      const messageIndex = conversation.messages.findIndex((message) => message.id === assistantMessageId)
+      const sourceUserMessage = messageIndex > 0 ? conversation.messages[messageIndex - 1] : null
+      if (messageIndex === -1 || !sourceUserMessage) return
+
+      dispatch({ type: 'set-error', error: null })
+      dispatch({ type: 'set-thinking', isThinking: true })
+      dispatch({ type: 'set-follow-ups', followUps: [] })
+
+      try {
+        if (!accessToken) throw new Error('You need to log in again')
+        const response = await taxApi.sendPrompt(
+          {
+            conversationId: conversation.id,
+            workflowId: conversation.workflowId,
+            prompt: sourceUserMessage.content,
+            attachments: sourceUserMessage.attachments ?? [],
+          },
+          accessToken,
+        )
+        dispatch({
+          type: 'replace-message',
+          conversationId: conversation.id,
+          messageId: assistantMessageId,
+          message: response.message,
+        })
+        dispatch({ type: 'set-follow-ups', followUps: response.followUps })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Something went wrong'
+        dispatch({ type: 'set-error', error: message })
+      } finally {
+        dispatch({ type: 'set-thinking', isThinking: false })
+      }
+    },
+    [accessToken, activeConversation],
+  )
+
   const toggleTheme = useCallback(() => {
     dispatch({ type: 'toggle-theme' })
   }, [])
@@ -313,10 +373,12 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       removeAttachment,
       sendPrompt,
       retryLastPrompt,
+      regenerateResponse,
       toggleTheme,
     }),
     [
       activeConversation,
+      regenerateResponse,
       removeAttachment,
       retryLastPrompt,
       selectConversation,

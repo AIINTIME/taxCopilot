@@ -31,7 +31,8 @@ CITATION_LOOKUP_TIMEOUT_S = 2.0
 
 
 async def resolve_computation_citations(state: QueryGraphState) -> dict:
-    trace = state.get("computation_trace") or {}
+    computation_result = state.get("computation_result") or {}
+    trace = computation_result.get("trace") or {}
     sections: list[str] = list(trace.get("statutory_references") or [])
 
     if not sections:

@@ -18,7 +18,109 @@ from app.services.computation.rules.personal.slab_tables import (
     get_deduction_limits,
     get_params,
 )
+from app.services.query.input_extractor import states_income
 from app.shared.schemas.tax_year import TaxYearContext
+
+# Asking to be shown the rate table itself -- "what are the slab rates", "tax
+# slabs for AY 2025-26", "new regime rates". Distinct from a computation ("what
+# is MY tax") because no income is involved: the answer is the table, read from
+# slab_tables, not a figure computed for the user.
+#
+# Kept to phrases that clearly ask for the rate TABLE. Deliberately excludes
+# "standard deduction" / "rebate" / "surcharge" on their own: those are as often
+# conceptual ("explain the standard deduction" -> retrieval) as lookups, and the
+# rate card already lists all three, so a slab-rate lookup shows them anyway.
+_RATE_LOOKUP_MARKERS = (
+    "slab rate",
+    "slab rates",
+    "tax slab",
+    "tax slabs",
+    "slabs for",
+    "slab for",
+    "rates for",
+    "tax rate",
+    "tax rates",
+    "income tax rate",
+    "rate of tax",
+    "regime rate",
+    "regime rates",
+)
+
+# A "how much / what limit" cue. Required for a deduction lookup so that
+# "explain 80C" (conceptual -> retrieval) is not mistaken for "what is the 80C
+# limit" (figure lookup). Naming a section alone is not enough.
+#
+# "deduction under" / "rebate under" were here and had to go: they appear in
+# ordinary prose that merely REFERS to a section ("home loan interest deduction
+# under Section 24(b)"), so they hijacked qualitative questions and answered
+# them with a limits table.
+_LIMIT_CUE = (
+    "limit",
+    "maximum",
+    "max ",
+    "how much",
+    "what is the",
+    "upto",
+    "up to",
+    "amount",
+    "quantum",
+    "deduction available",
+)
+
+# Eligibility / interaction questions want reasoning, not a number, even though
+# they name sections and may carry a limit cue. "Can I claim both HRA and
+# 24(b)?" is answered by retrieval; returning the 24(b) cap answers a question
+# nobody asked. These always beat the limit cue.
+_ELIGIBILITY_MARKERS = (
+    "can i",
+    "can a",
+    "can an",
+    "am i",
+    "are we",
+    "eligible",
+    "both",
+    "together",
+    "same time",
+    "simultaneously",
+    "as well as",
+    "along with",
+    "why",
+    "difference between",
+    "documents",
+)
+
+# Only a backstop, for the case where NO income is stated: "how much tax do I
+# pay?" must reach the computation branch so the graph can ask for the figure,
+# rather than being shown a rate table it did not ask for. A stated income is
+# handled by states_income() and never gets this far.
+_COMPUTE_MARKERS = (
+    "how much tax",
+    "how much do i",
+    "calculate",
+    "compute",
+    "tax liability",
+    "tax payable",
+    "what tax",
+    "what is the tax",
+    "what is my tax",
+    "what will be my tax",
+    "what would be my tax",
+    "what will my tax",
+    "tax i should pay",
+    "tax should i pay",
+    "tax i have to pay",
+    "tax do i pay",
+    "tax to pay",
+    "my tax",
+    "which regime",
+    "old or new",
+    "new or old",
+    "better regime",
+)
+
+
+def _has(query: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in query for marker in markers)
 
 
 def _band_rows(params) -> list[dict]:
@@ -93,6 +195,38 @@ def detect_deduction_query(query: str) -> bool:
     if _STANDARD_DEDUCTION.search(query) or _REBATE_87A.search(query):
         return True
     return any(pattern.search(query) for _, pattern in _DEDUCTION_TRIGGERS)
+
+
+def detect_rate_query(query: str) -> bool:
+    """True when the query asks to be shown the rate table itself.
+
+    A stated income (or an explicit compute phrasing) always wins: "what are the
+    slab rates?" is a lookup, but "my salary is 21L, what rate applies?" states
+    an input and must compute.
+    """
+    lowered = query.lower()
+    if not _has(lowered, _RATE_LOOKUP_MARKERS):
+        return False
+    return not states_income(query) and not _has(lowered, _COMPUTE_MARKERS)
+
+
+def detect_deduction_lookup(query: str) -> bool:
+    """True when the query asks for a deduction/rebate LIMIT: it names a section
+    AND asks how much, with no income stated.
+
+    "What is the 80D limit?" -> the figure from slab_tables. "Explain 80D" ->
+    retrieval, for lacking the limit cue. "Can I claim 80C and 80D together?" ->
+    retrieval, because eligibility beats the cue: answering it with a limits
+    table answers a question nobody asked.
+    """
+    lowered = query.lower()
+    return (
+        not states_income(query)
+        and not _has(lowered, _COMPUTE_MARKERS)
+        and not _has(lowered, _ELIGIBILITY_MARKERS)
+        and _has(lowered, _LIMIT_CUE)
+        and detect_deduction_query(query)
+    )
 
 
 def build_deduction_card(as_of: TaxYearContext, query: str) -> dict:

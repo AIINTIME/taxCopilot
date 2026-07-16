@@ -66,6 +66,10 @@ type DeductionCard = {
 
 export type QueryResponse = {
   answer: string
+  // Short extractive summary (services/rag/text_summary.py), distinct from
+  // `answer` -- the summary widget uses this so it doesn't just repeat the
+  // full answer already shown as the message's plain content.
+  summary: string
   citations: Citation[]
   computation_trace: ComputationTrace | null
   gate_status: GateStatus
@@ -111,7 +115,7 @@ const GATE_CONFIDENCE: Record<GateStatus, number> = {
 }
 
 function summaryWidget(response: QueryResponse): ResponseWidget {
-  const lines = [response.answer]
+  const lines = [response.summary]
 
   if (response.assumptions.length > 0) {
     lines.push(
@@ -169,6 +173,31 @@ function comparisonWidget(trace: ComputationTrace): ResponseWidget | null {
     cards: [
       card('Old Regime', 'old_taxable_income', oldTax, recommended === 'old'),
       card('New Regime', 'new_taxable_income', newTax, recommended === 'new'),
+    ],
+  }
+}
+
+/**
+ * Fallback for any rule other than personal_regime_comparison (mat, amt,
+ * regime_comparison, depreciation, capital_gains, capital_gains_exemption) --
+ * comparisonWidget/breakevenWidget above expect personal_regime_comparison's
+ * specific output keys and return null for these, so they'd otherwise render
+ * with no computation display at all. Generic metric-grid of every output.
+ */
+function genericComputationWidget(trace: ComputationTrace): ResponseWidget {
+  const outputs = Object.entries(trace.outputs).map(([label, value]) => ({
+    label,
+    value: typeof value === 'number' ? String(value) : String(value ?? '—'),
+  }))
+  const references = trace.statutory_references
+
+  return {
+    id: createId('widget'),
+    type: 'metric-grid',
+    title: `Computation — ${trace.rule_name}`,
+    metrics: [
+      ...outputs,
+      ...(references.length ? [{ label: 'Statutory references', value: references.join('; ') }] : []),
     ],
   }
 }
@@ -336,7 +365,11 @@ export function widgetsFromQueryResponse(response: QueryResponse): ResponseWidge
   const trace = response.computation_trace
   if (trace) {
     const comparison = comparisonWidget(trace)
-    if (comparison) widgets.push(comparison)
+    if (comparison) {
+      widgets.push(comparison)
+    } else {
+      widgets.push(genericComputationWidget(trace))
+    }
 
     const breakeven = breakevenWidget(trace)
     if (breakeven) widgets.push(breakeven)

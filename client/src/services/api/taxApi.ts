@@ -1,26 +1,16 @@
 /**
- * Tax assistant API.
+ * Tax assistant API. `sendPrompt` calls the real backend
+ * (POST /api/v1/{workflowId}/query) for every workflow -- corporate-tax,
+ * capital-gains and personal-tax all have real computation rules wired up
+ * (see backend/app/services/computation/engine.py's RULES), so none of them
+ * are routed to the mock. `analyzeReturn` (upload a filed ITR, get back
+ * discrepancies + an AI score) is a separate, additional capability.
  *
- * `sendPrompt` for the personal-tax workflow now calls the real backend
- * (POST /api/v1/personal-tax/query). This file previously re-exported
- * mockTaxApi wholesale, which meant every figure on screen was a hardcoded
- * fixture: the prompt was echoed into the summary text and never touched a
- * number, so "21 lakhs" and "18 lakhs" rendered byte-identical results.
- *
- * The rest still comes from the mock, deliberately:
- *
- *   createConversation / uploadDocument / enhancePrompt
- *       No backend endpoints exist for these. Conversations are client-side
- *       only, and the upload route that does exist (/admin/documents/upload)
- *       ingests STATUTORY sources into the shared knowledge base -- it is not
- *       a place to put a user's own return.
- *
- *   corporate-tax / capital-gains / notices
- *       The computation engine only implements personal income tax (Sec
- *       115BAC old-vs-new); the corporate rules are still stubs. Routing those
- *       workflows to the real endpoint would run personal-tax rules against
- *       corporate questions and return confident nonsense -- worse than an
- *       obvious placeholder.
+ * createConversation / uploadDocument / enhancePrompt still come from the
+ * mock: no backend endpoint exists for these. Conversations are client-side
+ * only, and the upload route that does exist (/admin/documents/upload)
+ * ingests STATUTORY sources into the shared knowledge base -- it is not a
+ * place to put a user's own return (that's what analyzeReturn is for).
  */
 
 import { mockTaxApi } from '../mock/mockTaxApi'
@@ -44,21 +34,17 @@ async function sendPrompt(
   request: SendPromptRequest,
   accessToken: string | null,
 ): Promise<SendPromptResponse> {
-  if (request.workflowId !== 'personal-tax') {
-    return mockTaxApi.sendPrompt(request)
-  }
-
   const response = await queryTax(request.workflowId, request.prompt, accessToken)
 
   const message: Message = {
     id: createId('message'),
     role: 'assistant',
-    content: response.clarification_needed
-      ? 'I need one more detail before I can compute this.'
-      : 'I reviewed the available inputs and prepared a structured tax analysis.',
+    content: response.answer,
     createdAt: new Date().toISOString(),
     status: 'complete',
     widgets: widgetsFromQueryResponse(response),
+    gateStatus: response.gate_status,
+    auditId: response.audit_log_id,
   }
 
   return {
@@ -101,9 +87,7 @@ async function analyzeReturn(
 }
 
 export const taxApi = {
-  createConversation: mockTaxApi.createConversation,
-  uploadDocument: mockTaxApi.uploadDocument,
-  enhancePrompt: mockTaxApi.enhancePrompt,
+  ...mockTaxApi,
   sendPrompt,
   analyzeReturn,
 }

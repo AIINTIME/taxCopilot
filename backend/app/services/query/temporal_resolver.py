@@ -12,7 +12,7 @@ defined in app.shared.schemas.tax_year:
 TAX YEAR FIRST, THEN REGIME -- the ordering matters and is easy to get wrong.
 "When the question is asked" and "which tax year it concerns" are different
 dates. Resolving the regime from today's date conflates them: a query asked in
-July 2026 is past ACT_2025_EFFECTIVE_DATE, but the asker is filing for
+July 2026 is past ACT_2025_EFFECTIVE_DATE, but the asker may be filing for
 FY 2025-26 (AY 2026-27), which ENDED 31 Mar 2026 -- before the pivot -- so the
 1961 Act governs. Deriving the regime from the wall clock would answer every
 filing-season query under the wrong Act, with an authoritative-looking trace.
@@ -20,6 +20,14 @@ filing-season query under the wrong Act, with an authoritative-looking trace.
 So: resolve the assessment year first (explicit if stated, else the most
 recently completed FY -- the one being filed), then place as_of_date inside
 that year, then compare against the pivots.
+
+ANCHORED TO THE START OF THE RESOLVED FY (1 Apr), not the end. This matters
+specifically for a FY that straddles CG_RATE_CHANGE_DATE (23 Jul 2024, inside
+FY 2024-25): anchoring at the start reads as PRE_RATE_CHANGE, anchoring at the
+end reads as POST_RATE_CHANGE, for the exact same "AY 2025-26" mention.
+Deliberately consistent across every code path that resolves a year without an
+exact date -- an explicit AY/FY mention and the "nothing stated, use the most
+recently completed FY" default both use this same start-of-year anchor.
 """
 
 import re
@@ -34,9 +42,6 @@ from app.shared.schemas.tax_year import (
     TaxYearContext,
 )
 
-_FY_END_MONTH = 3
-_FY_END_DAY = 31
-
 # "AY 2026-27" / "A.Y. 2026-27" / "assessment year 2026-27"
 _AY_PATTERN = re.compile(
     r"\b(?:a\.?y\.?|assessment\s+year)\s*[:\-]?\s*(\d{4})\s*[-/]\s*(\d{2,4})\b",
@@ -46,6 +51,10 @@ _AY_PATTERN = re.compile(
 _FY_PATTERN = re.compile(
     r"\b(?:f\.?y\.?|financial\s+year)\s*[:\-]?\s*(\d{4})\s*[-/]\s*(\d{2,4})\b",
     re.IGNORECASE,
+)
+# ISO or common date formats, e.g. 2025-07-15, 15/07/2025, 15-07-2025
+_DATE_PATTERN = re.compile(
+    r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b|\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b"
 )
 
 
@@ -88,6 +97,22 @@ def _parse_explicit_year(query: str) -> int | None:
     return None
 
 
+def _parse_explicit_date(query: str) -> date | None:
+    """An exact date stated in the query (not just an AY/FY mention)."""
+    date_match = _DATE_PATTERN.search(query)
+    if not date_match:
+        return None
+
+    if date_match.group(1):
+        year, month, day = date_match.group(1), date_match.group(2), date_match.group(3)
+    else:
+        day, month, year = date_match.group(4), date_match.group(5), date_match.group(6)
+    try:
+        return date(int(year), int(month), int(day))
+    except ValueError:
+        return None
+
+
 def resolve_as_of(
     query: str, explicit_date: date | None = None, today: date | None = None
 ) -> TaxYearContext:
@@ -104,18 +129,24 @@ def resolve_as_of(
         fy_start = financial_year_start_for(explicit_date)
     else:
         fy_start = _parse_explicit_year(query)
-        if fy_start is None:
-            fy_start = most_recently_completed_fy_start(today)
-        # Anchor to the last day of that FY: the date at which the year's law
-        # is settled, and unambiguously inside the year it belongs to.
-        as_of_date = date(fy_start + 1, _FY_END_MONTH, _FY_END_DAY)
+        if fy_start is not None:
+            # Anchor to the start of the stated FY -- see module docstring.
+            as_of_date = date(fy_start, 4, 1)
+        else:
+            parsed_date = _parse_explicit_date(query)
+            if parsed_date is not None:
+                as_of_date = parsed_date
+                fy_start = financial_year_start_for(parsed_date)
+            else:
+                fy_start = most_recently_completed_fy_start(today)
+                as_of_date = date(fy_start, 4, 1)
 
     regime = (
         TaxActRegime.ACT_2025
         if as_of_date >= ACT_2025_EFFECTIVE_DATE
         else TaxActRegime.ACT_1961
     )
-    cg_period = (
+    capital_gains_period = (
         CapitalGainsPeriod.POST_RATE_CHANGE
         if as_of_date >= CG_RATE_CHANGE_DATE
         else CapitalGainsPeriod.PRE_RATE_CHANGE
@@ -125,5 +156,5 @@ def resolve_as_of(
         as_of_date=as_of_date,
         assessment_year=_assessment_year_from_fy_start(fy_start),
         regime=regime,
-        capital_gains_period=cg_period,
+        capital_gains_period=capital_gains_period,
     )

@@ -21,6 +21,9 @@ class LLMSettings(BaseSettings):
     embedding_dimensions: int = Field(default=1536, alias="EMBEDDING_DIMENSIONS")
     fallback_llm_api_key: str = Field(default="", alias="FALLBACK_LLM_API_KEY")
     fallback_llm_model: str = Field(default="", alias="FALLBACK_LLM_MODEL")
+    fallback_llm_base_url: str = Field(
+        default="https://api.groq.com/openai/v1", alias="FALLBACK_LLM_BASE_URL"
+    )
     llm_timeout_seconds: int = Field(default=30, alias="LLM_TIMEOUT_SECONDS")
 
     model_config = SettingsConfigDict(

@@ -27,7 +27,7 @@ from app.services.computation.rules.personal.slab_tables import (
     RatesNotSeededError,
     get_params,
 )
-from app.services.query.input_extractor import extract_inputs, parse_amount
+from app.services.query.input_extractor import extract_inputs, parse_amount, states_income
 from app.services.query.temporal_resolver import resolve_as_of
 from app.shared.schemas.tax_year import (
     AssessmentYear,
@@ -309,10 +309,15 @@ class TestTemporalResolution:
         assert ctx.assessment_year.ay == expected_ay
 
     def test_capital_gains_pivot(self):
+        # A bare "FY 2024-25" mention (no exact date) resolves to that FY's
+        # START (1 Apr 2024), not its end -- deliberately consistent with
+        # every other code path that resolves a year without an exact date,
+        # since FY 2024-25 straddles the 23-Jul-2024 rate change and the
+        # two anchors disagree about which side of it the year falls on.
         old = resolve_as_of("tax for FY 2023-24", today=date(2026, 7, 15))
         new = resolve_as_of("tax for FY 2024-25", today=date(2026, 7, 15))
         assert old.capital_gains_period is CapitalGainsPeriod.PRE_RATE_CHANGE
-        assert new.capital_gains_period is CapitalGainsPeriod.POST_RATE_CHANGE
+        assert new.capital_gains_period is CapitalGainsPeriod.PRE_RATE_CHANGE
 
     def test_explicit_date_wins(self):
         ctx = resolve_as_of("whatever", explicit_date=date(2024, 1, 1))
@@ -496,6 +501,57 @@ class TestExtractedInputsReachTheEngine:
         assert with_hra.outputs["old_regime_tax"] < without.outputs["old_regime_tax"]
 
 
+class TestStatesIncome:
+    """states_income gates compute-vs-retrieve AND personal-vs-corporate rule
+    choice, so a false negative silently turns the headline question into "no
+    computation was run"."""
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            # REGRESSION: "income" in "income TAX" was a decoy label. states_income
+            # took only the first match (_INCOME_LABEL.search), measured from
+            # "income" to the figure 58 chars away, exceeded the bind window, and
+            # returned False -- while extract_inputs read 18,00,000 from the very
+            # same string. The currency form is irrelevant; the decoy was the cause.
+            "How much income tax will I personally owe this year if my salary is ₹18 lakh?",
+            "How much income tax will I personally owe this year if my salary is Rs 18 lakh?",
+            "How much income tax will I personally owe this year if my salary is 18 lakh?",
+            "How much income tax will I personally owe this year if my salary is 18 lakhs?",
+            "what income tax do I pay on my salary of 18 lpa",
+            "my salary is 18 lakh",
+            "my salary is 5 lakhs and I have HRA of 6 lakhs",
+        ],
+    )
+    def test_a_stated_income_is_seen_however_the_question_is_worded(self, query):
+        assert states_income(query) is True
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            # A figure that belongs to a SECTION is not an income. The section
+            # label sits nearer the amount and claims it.
+            "What is the 80C limit of 1.5 lakh",
+            # No income label at all. This is the case that rules out simply
+            # delegating to extract_inputs, which falls back to the largest
+            # unclaimed amount and would read 50,000 here as a salary.
+            "Which section governs TDS on rent paid by an individual exceeding ₹50,000 per month?",
+            "What is the maximum deduction under Section 80D for senior citizen parents?",
+            "What are the income tax slab rates for the new regime for AY 2025-26?",
+            "What's the tax treatment of my capital gains?",
+        ],
+    )
+    def test_a_figure_that_is_not_an_income_is_not_read_as_one(self, query):
+        assert states_income(query) is False
+
+    def test_it_agrees_with_extract_inputs_on_the_headline_question(self):
+        # The two detectors answer the same question and must not diverge: this
+        # disagreement is exactly what the bug was.
+        q = "How much income tax will I personally owe this year if my salary is 18 lakh?"
+        assert states_income(q) is True
+        assert extract_inputs(q).values["gross_income"] == 1_800_000
+
+
 class TestEngineDispatch:
     def test_compute_returns_a_trace_with_citable_references(self):
         trace = compute(
@@ -529,7 +585,7 @@ class TestEngineDispatch:
         assert trace.outputs["recommended_regime"] == "old"
 
     def test_unknown_rule_names_are_rejected_clearly(self):
-        with pytest.raises(KeyError):
+        with pytest.raises(ValueError):
             compute("no_such_rule", {}, AY_2026_27)
 
 

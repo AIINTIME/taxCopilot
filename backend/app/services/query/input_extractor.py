@@ -249,16 +249,38 @@ def states_income(query: str) -> bool:
 
     Exported for intent_classifier, which cannot route on question phrasing
     alone: "what is my payable tax" and "what is HRA" open identically.
+
+    Uses the same competitive binding as extract_inputs, and must keep doing so.
+    This once took only the FIRST income label (`_INCOME_LABEL.search`), which
+    made the word "income" a decoy: in "how much INCOME tax will I owe if my
+    SALARY is 18 lakh?" it measured from "income" (pos 9) to the figure (pos 67),
+    exceeded _BIND_WINDOW, and returned False -- so the headline question routed
+    to retrieval and answered "no computation was run", while extract_inputs read
+    18,00,000 from the same string. Two detectors, same question, different
+    answers; the weaker one gated the branch.
+
+    It deliberately does NOT delegate to extract_inputs, despite the overlap:
+    that falls back to the largest unclaimed amount when no income label binds
+    (see below), so "TDS on rent exceeding 50,000 per month" would report a
+    stated income of 50,000 and route a law question into the engine. Here, an
+    amount with no income label near it is not an income.
     """
-    label = _INCOME_LABEL.search(query)
-    if not label:
+    amounts = _find_amounts(query)
+    if not amounts:
         return False
 
-    income_label = _Label("gross_income", label.start(), label.end())
-    return any(
-        0 <= _distance(income_label, amount) <= _BIND_WINDOW
-        for amount in _find_amounts(query)
-    )
+    # Section labels compete for the amounts, so a figure that belongs to a
+    # section is not misread as income: in "what is the 80C limit of 1.5 lakh",
+    # "80C" is nearer than any income word and claims the figure.
+    labels = [
+        _Label("gross_income", match.start(), match.end())
+        for match in _INCOME_LABEL.finditer(query)
+    ]
+    for field_name, pattern in SECTION_PATTERNS.items():
+        for match in pattern.finditer(query):
+            labels.append(_Label(field_name, match.start(), match.end()))
+
+    return "gross_income" in _bind_labels_to_amounts(labels, amounts)
 
 
 def _detect_income_type(query: str) -> IncomeType | None:

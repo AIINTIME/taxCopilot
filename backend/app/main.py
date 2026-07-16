@@ -1,8 +1,17 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+
+# INFO-level so the [FLOW] debug logs in orchestration/graphs/query_graph.py
+# (which node fired, which external service was hit -- Pinecone/Neo4j/OpenAI/
+# Postgres/pure-computation -- and what it returned) print to the console.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 from app.api.admin import router as admin_router
 from app.shared.graph.neo4j_client import get_neo4j_client

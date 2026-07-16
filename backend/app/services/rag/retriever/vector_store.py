@@ -1,87 +1,53 @@
-"""Pinecone-backed similarity search over statutory knowledge-graph chunks.
+"""Similarity search over the statutory knowledge namespace in Pinecone --
+the real, already-populated vector store (shared/vector/pinecone_client.py,
+"statutory-kg" namespace). An earlier version of this file queried a
+pgvector table (KnowledgeChunk) invented from a stale architecture-doc
+comment; that table was always empty and has been dropped (migration
+202607160002) -- Pinecone was the real store all along.
 
-Reads the `statutory-kg` namespace that ingestion/upsert/statutory_kg_upsert.py
-writes -- the same chunk ids, so `chunk_id` joins a vector hit to the Neo4j
-`VectorChunkRef` nodes graph_writer.py creates. Never touches `user-docs`; the
-two namespaces are never mixed.
-
-Goes through shared/vector/pinecone_client.py, the only file permitted to
-import the Pinecone SDK, and shared/embeddings via ingestion/embedding.py for
-the query vector. No SDK is imported here.
-
-QUERY EMBEDDING MUST MATCH THE STORED EMBEDDING. Both sides go through
-embed_texts(), so both get `text-embedding-3-large` truncated to
-EMBEDDING_DIMENSIONS (1536), matching the index. If the model or dimension is
-ever changed on one side only, Pinecone raises on a dimension mismatch -- but a
-*model* change at the same dimension fails silently, returning plausible
-nearest neighbours computed in an unrelated vector space. Re-verify the index
-dimension against EMBEDDING_DIMENSIONS after any embedding config change.
-
-NO AS-OF FILTER IS APPLIED, deliberately. The architecture calls for filtering
-retrieval by the resolved as-of date, but every vector currently carries
-`effective_from=''` and `regime='1961'` (api/admin.py upserts with only
-`tier=10` and lets the rest default), so a metadata filter would match nothing
-and silently empty the result set. Worse, the `regime` tag is not merely absent
-but wrong: the corpus contains Income-tax Act 2025 provisions (sections above
-298, which do not exist in the 1961 Act) all labelled '1961'. Filtering on it
-would confidently return the wrong Act. `as_of` is therefore accepted and
-unused here until the metadata is backfilled -- see filter_supported().
-
-Consequence for callers: a vector hit is a POINTER, not an authority. The
-corpus mixes vintages (the Sec 87A threshold appears as both the current
-12,00,000 and the superseded 7,00,000, in the same document), and the Evidence
-Gate cannot tell them apart -- it verifies provenance, not currency. Take the
-chunk's topic; take figures from computation/rules/personal/slab_tables.py or
-the Neo4j rule graph.
+pinecone_client.py's query() is a synchronous SDK call; run via
+asyncio.to_thread so it doesn't block the event loop.
 """
 
-from app.services.ingestion.embedding import embed_texts
+import asyncio
+
+from app.shared.embeddings.openai_embedding_provider import get_embedding_provider
 from app.shared.schemas.tax_year import TaxYearContext
 from app.shared.vector.pinecone_client import get_pinecone_client
 
-STATUTORY_KG_NAMESPACE = "statutory-kg"
-
-
-def filter_supported() -> bool:
-    """Whether as-of/regime metadata filtering can be trusted yet.
-
-    Hard False until ingestion backfills `effective_from`/`regime`. Kept as a
-    function rather than a comment so the switch is discoverable from the
-    callers that will want it.
-    """
-    return False
+_NAMESPACE = "statutory-kg"
 
 
 async def similarity_search(
-    query: str, as_of: TaxYearContext, top_k: int = 10
+    query_embedding: list[float], as_of: TaxYearContext, top_k: int = 10
 ) -> list[dict]:
-    """Semantic search. Returns plain dicts; no Pinecone types leak out.
-
-    `as_of` is part of the retrieval contract every store shares and is
-    accepted for that consistency, but is not yet applied -- see the module
-    docstring.
-    """
-    del as_of  # not usable until vector metadata is backfilled
-
-    embeddings = await embed_texts([query])
-    if not embeddings:
-        return []
-
-    hits = get_pinecone_client().query(
-        namespace=STATUTORY_KG_NAMESPACE,
-        vector=embeddings[0],
+    # Deliberately no server-side regime filter: the ingested corpus so far
+    # is tagged regime="1961" even for queries that resolve to the 2025-Act
+    # regime (e.g. today's date), and Pinecone's metadata filter would
+    # silently return nothing rather than degrade gracefully. Regime is
+    # still returned per-row so callers/ground_truth_gate can reason about
+    # it explicitly instead of it being invisibly filtered away.
+    results = await asyncio.to_thread(
+        get_pinecone_client().query,
+        namespace=_NAMESPACE,
+        vector=query_embedding,
         top_k=top_k,
     )
-
     return [
         {
-            "chunk_id": hit["id"],
-            "source_id": hit["metadata"].get("source_id", ""),
-            "content": hit["metadata"].get("text", ""),
-            # Pinecone metadata carries no section number; only the Neo4j join
-            # on chunk_id can supply one. See retriever/graph_store.py.
-            "section_reference": None,
-            "score": hit["score"],
+            "chunk_id": row["id"],
+            "source_id": row["metadata"].get("source_id", ""),
+            "document_id": row["metadata"].get("document_id", ""),
+            "content": row["metadata"].get("text", ""),
+            "section_reference": row["metadata"].get("section_reference"),
+            "score": row["score"],
+            "regime": row["metadata"].get("regime"),
+            "tier": row["metadata"].get("tier"),
         }
-        for hit in hits
+        for row in results
     ]
+
+
+async def embed_query(query: str) -> list[float]:
+    [vector] = await get_embedding_provider().embed([query])
+    return vector
