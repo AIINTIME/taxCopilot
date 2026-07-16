@@ -55,6 +55,35 @@ class TestIntentClassifier:
     @pytest.mark.parametrize(
         "query",
         [
+            # Both of these escaped an enumerated list of compute phrasings, in
+            # production, one after the other.
+            "My current salary is 21 Lakhs per annum what is the tax i should pay",
+            "My salary is 19 lakhs per annum what is my payable tax",
+            # Phrasings nobody would think to enumerate. That is the point: the
+            # signal is the stated income, not the wording of the question.
+            "I earn 12 lakhs, whats the damage",
+            "salary 21 lakhs. tax?",
+            "my salary is 18lpa, what is my tax payable",
+            "what will be my tax if my salary is 18lpa",
+        ],
+    )
+    def test_a_stated_income_always_computes_however_it_is_asked(self, query):
+        # REGRESSION x2, both found against the real UI. Matching the QUESTION
+        # cannot work: "what is the tax i should pay" and "what is HRA" open
+        # identically, and "payable tax" reverses "tax payable". Each miss
+        # degrades silently to "no computation was run" -- a plausible paragraph
+        # where a number was asked for. Route on the income instead: there is
+        # always another phrasing, but only one income.
+        assert classify_intent(query) in (Intent.COMPUTATION, Intent.BOTH)
+
+    def test_an_amount_owned_by_a_section_is_not_an_income(self):
+        # The counterweight: routing on "there is a number" would drag every
+        # law question that quotes a threshold into the computation branch.
+        assert classify_intent("what is the 80C limit of 1.5 lakh") is Intent.RETRIEVAL
+
+    @pytest.mark.parametrize(
+        "query",
+        [
             "what is HRA exemption under section 10(13A)",
             "explain the standard deduction",
             "can I claim 80C and HRA together",
@@ -290,6 +319,80 @@ class TestAssembleResponse:
             }
         )
         assert out["answer"] == "narrated prose"
+
+
+class TestNarrationDegradation:
+    """A failing LLM must not discard an answer that is already computed."""
+
+    def _run_narrate(self, monkeypatch, raises: Exception):
+        from app.orchestration.graphs import query_graph
+
+        async def boom(system_prompt, messages):
+            raise raises
+
+        monkeypatch.setattr(query_graph, "generate_narrative", boom)
+        return asyncio.run(
+            query_graph._narrate_node(
+                {
+                    "query": "my salary is 21 lakhs",
+                    "retrieved_chunks": [],
+                    "computation_trace": {"outputs": {"new_regime_tax": 214_500}},
+                    "assumptions": [],
+                }
+            )
+        )
+
+    def test_llm_failure_does_not_raise(self, monkeypatch):
+        # REGRESSION: a revoked API key returned a 500 and threw away a correct
+        # computation. The LLM writes prose; it does not produce the figures.
+        out = self._run_narrate(monkeypatch, RuntimeError("401 invalid api key"))
+        assert out["llm_response"] is None
+
+    def test_the_missing_explanation_is_disclosed(self, monkeypatch):
+        # Degrading must not be silent -- otherwise a reader assumes there was
+        # simply nothing to explain.
+        out = self._run_narrate(monkeypatch, RuntimeError("boom"))
+        assert any("could not be generated" in a for a in out["assumptions"])
+
+    def test_prior_assumptions_survive_the_degradation(self, monkeypatch):
+        from app.orchestration.graphs import query_graph
+
+        async def boom(system_prompt, messages):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(query_graph, "generate_narrative", boom)
+        out = asyncio.run(
+            query_graph._narrate_node(
+                {
+                    "query": "q",
+                    "retrieved_chunks": [],
+                    "computation_trace": None,
+                    "assumptions": ["No deductions were read from your question"],
+                }
+            )
+        )
+        assert len(out["assumptions"]) == 2
+
+    def test_assemble_still_produces_the_computed_answer(self):
+        # The other half of the contract: with llm_response None, the response
+        # is rendered from the trace rather than being empty.
+        out = asyncio.run(
+            assemble_response(
+                {
+                    "as_of": AS_OF,
+                    "llm_response": None,
+                    "computation_trace": {
+                        "outputs": {
+                            "old_regime_tax": 241_800,
+                            "new_regime_tax": 214_500,
+                            "recommended_regime": "new",
+                            "deciding_factors": [],
+                        }
+                    },
+                }
+            )
+        )["final_response"]
+        assert "214,500" in out["answer"]
 
 
 class TestConfidence:

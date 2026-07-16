@@ -19,6 +19,7 @@ trace back to the document is a number nobody can check.
 import re
 from dataclasses import dataclass, field
 
+from app.services.computation.rules.personal.deduction_sections import SECTION_PATTERNS
 from app.services.computation.rules.personal.deductions import DeductionInputs
 from app.services.computation.rules.personal.regime_comparison_personal import IncomeType
 from app.services.computation.rules.personal.slab_tables import PersonalRegime
@@ -43,27 +44,10 @@ _TAX_LABELS = (
     "net tax payable",
     "total tax liability",
 )
-# Section labels are matched with WORD BOUNDARIES, not substrings. Section
-# numbers nest: "80CCD(2)" contains "80C", and "80CCC" contains "80C" too, so
-# plain `"80c" in line` reads one NPS claim as both an 80C claim and an 80CCD
-# claim -- inventing a deduction the return never made and quietly shifting the
-# recomputed tax. \b after "80c" fails against the "c" of "ccd", which is
-# exactly the discrimination needed here.
-_DEDUCTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("section_80c", re.compile(r"\b80\s*-?\s*c\b", re.IGNORECASE)),
-    ("section_80d", re.compile(r"\b80\s*-?\s*d\b", re.IGNORECASE)),
-    ("section_80g", re.compile(r"\b80\s*-?\s*g\b", re.IGNORECASE)),
-    ("section_80tta", re.compile(r"\b80\s*-?\s*tta\b", re.IGNORECASE)),
-    (
-        "home_loan_interest_24b",
-        re.compile(r"\b24\s*\(\s*b\s*\)|interest\s+on\s+housing\s+loan", re.IGNORECASE),
-    ),
-    (
-        "hra_exemption",
-        re.compile(r"\bhra\b|house\s+rent\s+allowance|\b10\s*\(\s*13a\s*\)", re.IGNORECASE),
-    ),
-    ("employer_nps_80ccd2", re.compile(r"\b80\s*-?\s*ccd\s*\(\s*2\s*\)", re.IGNORECASE)),
-)
+# Section recognition comes from computation/rules/personal/deduction_sections --
+# the same vocabulary query/input_extractor uses on prose, so a section the chat
+# understands is a section a form can be read for. See that module on why the
+# patterns are word-bounded rather than substrings.
 
 _NEW_REGIME_MARKERS = ("115bac", "new tax regime", "new regime", "default regime")
 _OLD_REGIME_MARKERS = ("old tax regime", "old regime", "opted out")
@@ -113,6 +97,17 @@ def _find_by_pattern(lines: list[str], pattern: re.Pattern[str]) -> tuple[float,
     return None
 
 
+def _line_containing(lines: list[str], markers: tuple[str, ...]) -> str | None:
+    """First line mentioning any marker -- the source line for a detected fact,
+    so provenance stays "the line it came from" rather than the parsed value.
+    """
+    for line in lines:
+        lowered = line.lower()
+        if any(m in lowered for m in markers):
+            return line.strip()
+    return None
+
+
 def _detect_regime(text: str) -> PersonalRegime | None:
     lowered = text.lower()
     new_hit = any(m in lowered for m in _NEW_REGIME_MARKERS)
@@ -150,18 +145,24 @@ def extract_from_text(text: str) -> ExtractedReturn:
 
     regime = _detect_regime(text)
     if regime:
-        provenance["regime_filed"] = regime.value
+        provenance["regime_filed"] = (
+            _line_containing(lines, _NEW_REGIME_MARKERS + _OLD_REGIME_MARKERS)
+            or regime.value
+        )
     else:
         missing.append("regime_filed")
 
     income_type = _detect_income_type(text)
     if income_type:
-        provenance["income_type"] = income_type.value
+        provenance["income_type"] = (
+            _line_containing(lines, _SALARY_MARKERS + _BUSINESS_MARKERS)
+            or income_type.value
+        )
     else:
         missing.append("income_type")
 
     claimed: dict[str, float] = {}
-    for field_name, pattern in _DEDUCTION_PATTERNS:
+    for field_name, pattern in SECTION_PATTERNS.items():
         found = _find_by_pattern(lines, pattern)
         if found:
             claimed[field_name] = found[0]

@@ -371,6 +371,131 @@ class TestInputExtraction:
         assert any("deduction" in a.lower() for a in e.assumptions)
 
 
+class TestLakhsPerAnnum:
+    """"LPA" is the commonest way an Indian salary is stated, and used to parse
+    as a bare number: "18 lpa" became eighteen RUPEES, and the system answered
+    with a tax of zero -- entirely plausibly, with a full trace.
+    """
+
+    @pytest.mark.parametrize(
+        "text, expected",
+        [
+            ("18lpa", 1_800_000),
+            ("18 lpa", 1_800_000),
+            ("21 LPA", 2_100_000),
+            ("21 L.P.A", 2_100_000),
+        ],
+    )
+    def test_lpa_is_lakhs_not_rupees(self, text, expected):
+        assert parse_amount(text) == pytest.approx(expected)
+
+    def test_lpa_reaches_the_computation(self):
+        e = extract_inputs("my salary is 18lpa what tax do i pay")
+        assert e.values["gross_income"] == 1_800_000
+        assert not e.needs_clarification
+
+
+class TestAmountBinding:
+    """Amounts bind to the label that gives them meaning, never to a ranking."""
+
+    def test_income_is_bound_to_its_label_not_to_the_largest_figure(self):
+        # REGRESSION: income used to be "the biggest number in the query", which
+        # inverts the moment a deduction exceeds it -- the HRA was read as the
+        # salary and the whole computation ran on the wrong income.
+        e = extract_inputs("my salary is 5 lakhs and I have HRA of 6 lakhs")
+        assert e.values["gross_income"] == 500_000
+        assert e.deductions["hra_exemption"] == 600_000
+
+    def test_deduction_after_its_section(self):
+        e = extract_inputs("my salary is 21 lakhs and I have HRA of 4 lakhs")
+        assert e.values["gross_income"] == 2_100_000
+        assert e.deductions["hra_exemption"] == 400_000
+
+    def test_deduction_before_its_section(self):
+        # "1.5 lakhs in 80C" -- the figure precedes the label.
+        e = extract_inputs("my salary is 21 lakhs, I invested 1.5 lakhs in 80C")
+        assert e.values["gross_income"] == 2_100_000
+        assert e.deductions["section_80c"] == 150_000
+
+    def test_several_deductions_at_once(self):
+        e = extract_inputs("my salary is 21 lakhs, 80C 1.5 lakhs, 80D 25000, HRA 3 lakhs")
+        assert e.values["gross_income"] == 2_100_000
+        assert e.deductions["section_80c"] == 150_000
+        assert e.deductions["section_80d"] == 25_000
+        assert e.deductions["hra_exemption"] == 300_000
+
+    def test_a_nearby_section_cannot_steal_the_income(self):
+        # REGRESSION: binding deductions before income let "HRA" -- 11 chars from
+        # "21 lakhs" -- claim the salary figure, leaving income empty. Binding is
+        # nearest-first across all labels, so "salary" wins the figure beside it.
+        e = extract_inputs("my salary is 21 lakhs, I have HRA and sold one mutual fund")
+        assert e.values["gross_income"] == 2_100_000
+        assert "hra_exemption" not in e.deductions
+
+    def test_a_bare_amount_with_no_label_still_reads_as_income(self):
+        e = extract_inputs("21 lakhs salary")
+        assert e.values["gross_income"] == 2_100_000
+
+    def test_80ccd2_does_not_also_register_as_80c(self):
+        # Word boundaries: "80CCD(2)" contains "80c".
+        e = extract_inputs("my salary is 21 lakhs and 80CCD(2) of 50000")
+        assert e.deductions.get("employer_nps_80ccd2") == 50_000
+        assert "section_80c" not in e.deductions
+
+
+class TestAssumptionsAreTruthful:
+    def test_no_false_claim_when_a_deduction_was_mentioned(self):
+        # REGRESSION: the assumption fired on `"deduction" not in query`, so
+        # saying "HRA of 4 lakhs" still printed "No deductions were stated" --
+        # telling the user they had not said what they had just said.
+        e = extract_inputs("my salary is 21 lakhs and I have HRA of 4 lakhs")
+        assert not any("no deductions" in a.lower() for a in e.assumptions)
+
+    def test_the_assumption_still_fires_when_nothing_was_read(self):
+        e = extract_inputs("my salary is 21 lakhs")
+        assert any("no deductions" in a.lower() for a in e.assumptions)
+
+    def test_it_claims_only_what_it_read_not_what_the_user_said(self):
+        # "were read from your question" is checkable; "were stated" is a claim
+        # about the user that the extractor is in no position to make.
+        e = extract_inputs("my salary is 21 lakhs")
+        assumption = next(a for a in e.assumptions if "no deductions" in a.lower())
+        assert "read from your question" in assumption
+
+    def test_a_section_named_without_a_figure_is_surfaced(self):
+        e = extract_inputs("my salary is 21 lakhs and I have HRA")
+        assert any("without an amount" in a for a in e.assumptions)
+
+    def test_a_disposal_is_flagged_rather_than_silently_dropped(self):
+        # Capital gains are still a stub. Ignoring a share sale inside a tax
+        # computation would be a wrong answer wearing a full audit trail.
+        e = extract_inputs("my salary is 21 lakhs and I sold one mutual fund")
+        assert any("capital gains" in a.lower() for a in e.assumptions)
+
+
+class TestExtractedInputsReachTheEngine:
+    def test_deductions_are_passed_through_to_the_rule(self):
+        e = extract_inputs("my salary is 21 lakhs and I have HRA of 4 lakhs")
+        rule_inputs = e.to_rule_inputs()
+        assert rule_inputs["deductions"] == {"hra_exemption": 400_000}
+
+    def test_a_stated_deduction_actually_changes_the_answer(self):
+        # The point of all of it: HRA used to be parsed nowhere, so it never
+        # reached the maths and the old-regime figure was computed as if the
+        # taxpayer had claimed nothing.
+        without = compute(
+            "personal_regime_comparison",
+            extract_inputs("my salary is 21 lakhs").to_rule_inputs(),
+            AY_2026_27,
+        )
+        with_hra = compute(
+            "personal_regime_comparison",
+            extract_inputs("my salary is 21 lakhs and I have HRA of 4 lakhs").to_rule_inputs(),
+            AY_2026_27,
+        )
+        assert with_hra.outputs["old_regime_tax"] < without.outputs["old_regime_tax"]
+
+
 class TestEngineDispatch:
     def test_compute_returns_a_trace_with_citable_references(self):
         trace = compute(

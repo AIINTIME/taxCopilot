@@ -4,9 +4,29 @@ This must be a deterministic classifier (keyword/pattern based), not an LLM
 call -- the LLM never decides control flow in this system, only narrates
 retrieved content.
 
-The rule, in one line: a query needs COMPUTATION when it carries a figure to
-compute on, and RETRIEVAL when it asks what the law says. Asking both at once
-(the common real case -- "I earn 21 lakhs, can I claim HRA?") is BOTH.
+THE PRIMARY SIGNAL IS A STATED INCOME, NOT THE PHRASING OF THE QUESTION. If the
+user says what they earn, that figure is an INPUT and they want it computed on,
+however they happen to word the ask.
+
+That rule is deliberate, and was learned the hard way. This module first tried
+to match the QUESTION instead: a list of compute phrasings ("how much tax",
+"what tax") against a list of law phrasings ("what is", "explain"). It
+misroutes repeatedly, because the two are not separable by wording --
+
+    "what is the tax i should pay"  -> compute   } identical openings
+    "what is HRA"                   -> retrieve  }
+
+-- and every miss degrades SILENTLY to "no computation was run for this
+question": a plausible paragraph where a number was asked for. Two real user
+phrasings escaped the enumerated list before this rule replaced it: "what is
+the tax i should pay", then "what is my payable tax" (which merely reverses the
+word order of "tax payable"). There is always a third phrasing. There is only
+one income.
+
+The compute markers below survive, but only to catch the case where NO income
+is stated -- "how much tax do I pay?" -- so the graph can ask for the figure
+rather than retrieving generic slab commentary. They are a backstop, not the
+mechanism.
 
 Biased toward RETRIEVAL when nothing matches. A misrouted retrieval returns a
 grounded, cited answer that is merely broader than asked; a misrouted
@@ -16,6 +36,8 @@ useful beats wrong-and-empty.
 
 import re
 from enum import Enum
+
+from app.services.query.input_extractor import states_income
 
 
 class Intent(str, Enum):
@@ -35,6 +57,14 @@ _AMOUNT = re.compile(
 )
 
 # Asking for a number to be produced.
+#
+# Phrasings of "what is my tax bill" are enumerated rather than matched loosely,
+# because the natural ones collide head-on with _RETRIEVE_MARKERS' "what is".
+# "What is the tax I should pay" is a computation request; "what is HRA" is not,
+# and the two open identically. A phrasing missing from this list does not fail
+# loudly -- it routes a calculation to retrieval, which answers "no computation
+# was run for this question". So extend THIS list when a variant is missed;
+# never loosen the retrieval side to compensate.
 _COMPUTE_MARKERS = (
     "how much tax",
     "how much do i",
@@ -43,6 +73,16 @@ _COMPUTE_MARKERS = (
     "tax liability",
     "tax payable",
     "what tax",
+    "what is the tax",
+    "what is my tax",
+    "what will be my tax",
+    "what would be my tax",
+    "what will my tax",
+    "tax i should pay",
+    "tax should i pay",
+    "tax i have to pay",
+    "tax do i pay",
+    "tax to pay",
     "my tax",
     "which regime",
     "old or new",
@@ -86,26 +126,29 @@ def _has(query: str, markers: tuple[str, ...]) -> bool:
 def classify_intent(query: str) -> Intent:
     lowered = query.lower()
 
+    income_stated = states_income(query)
     has_amount = bool(_AMOUNT.search(lowered))
     wants_number = _has(lowered, _COMPUTE_MARKERS)
     wants_law = _has(lowered, _RETRIEVE_MARKERS)
 
-    # Asking for a figure AND what the law says: "I earn 21 lakhs, how much tax
-    # and can I claim HRA?"
-    if wants_number and wants_law:
-        return Intent.BOTH
+    # A stated income settles it: the figure is an input, so compute on it.
+    # Where the user ALSO asks what the law says -- "I earn 21 lakhs, can I
+    # claim HRA?", or "my salary is 19 lakhs, what is my payable tax" where
+    # "what is" reads as a law question -- take BOTH. It computes either way,
+    # and the retrieved context only improves the narration around figures the
+    # engine already produced.
+    if income_stated or wants_number:
+        return Intent.BOTH if wants_law else Intent.COMPUTATION
 
-    # A law question that happens to quote an amount is still a law question:
-    # in "what is the 80C limit of 1.5 lakh?" the figure is part of the
-    # question, not an input to compute on.
+    # No income stated. A law question that quotes an amount is still a law
+    # question: in "what is the 80C limit of 1.5 lakh?" the figure belongs to
+    # the section, not to the taxpayer.
     if wants_law:
         return Intent.RETRIEVAL
 
-    # An amount with no question attached is a computation request. Stating
-    # "my income is 5 lakhs per annum" inside a tax workflow means "work out my
-    # tax" -- routing it to retrieval answers a question nobody asked and, with
-    # no figures for the model to narrate, produces "no computation was run".
-    if wants_number or has_amount:
+    # A bare amount with no question attached -- "21 lakhs" -- is a computation
+    # request by context: this is a tax calculator.
+    if has_amount:
         return Intent.COMPUTATION
 
     return Intent.RETRIEVAL

@@ -13,20 +13,11 @@ deductions the new regime costs the taxpayer, which is what drives
 from dataclasses import dataclass, fields
 
 from app.services.computation.computation_trace import TraceStep
+from app.services.computation.rules.personal.deduction_sections import SECTION_LABELS
 from app.services.computation.rules.personal.slab_tables import (
     DeductionLimits,
     RegimeParams,
 )
-
-_SECTION_LABELS: dict[str, str] = {
-    "section_80c": "Sec 80C",
-    "section_80d": "Sec 80D",
-    "section_80g": "Sec 80G",
-    "section_80tta": "Sec 80TTA",
-    "home_loan_interest_24b": "Sec 24(b)",
-    "hra_exemption": "Sec 10(13A)",
-    "employer_nps_80ccd2": "Sec 80CCD(2)",
-}
 
 
 @dataclass(frozen=True)
@@ -81,7 +72,7 @@ def compute_deductions(
         if claimed <= 0:
             continue
 
-        label = _SECTION_LABELS[name]
+        label = SECTION_LABELS[name]
 
         if name not in params.allowed_deductions:
             disallowed.append(label)

@@ -14,6 +14,7 @@ numeric difference against a versioned rate table, or it is not a discrepancy.
 from dataclasses import dataclass, field
 from enum import Enum
 
+from app.services.computation.rules.personal.deduction_sections import SECTION_LABELS
 from app.services.computation.rules.personal.deductions import DeductionInputs
 from app.services.computation.rules.personal.regime_comparison_personal import (
     IncomeType,
@@ -88,16 +89,6 @@ class ReconciliationResult:
         return bool(self.discrepancies)
 
 
-_SECTION_LABELS: dict[str, str] = {
-    "section_80c": "Sec 80C",
-    "section_80d": "Sec 80D",
-    "section_80g": "Sec 80G",
-    "section_80tta": "Sec 80TTA",
-    "home_loan_interest_24b": "Sec 24(b)",
-    "hra_exemption": "Sec 10(13A)",
-    "employer_nps_80ccd2": "Sec 80CCD(2)",
-}
-
 _CAPPED_FIELDS = {
     "section_80c": "section_80c",
     "section_80d": "section_80d_self",
@@ -116,7 +107,7 @@ def _check_deduction_claims(
     limits = get_deduction_limits(as_of.assessment_year.ay)
     found: list[Discrepancy] = []
 
-    for field_name, label in _SECTION_LABELS.items():
+    for field_name, label in SECTION_LABELS.items():
         claimed = getattr(filed.deductions, field_name, 0.0)
         if claimed <= 0:
             continue

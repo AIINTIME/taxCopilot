@@ -18,6 +18,7 @@ FIRST also produces better narration -- the model receives the computed figures
 alongside the retrieved text, which is exactly the shape rag/prompts expects.
 """
 
+import logging
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -34,6 +35,8 @@ from app.services.rag.evidence_gate import verify_citations
 from app.services.rag.llm_client import generate_narrative
 from app.services.rag.prompts import build_narration_messages, parse_narration
 from app.services.rag.retriever.hybrid_retriever import RetrievedChunk, hybrid_search
+
+logger = logging.getLogger(__name__)
 
 # The only rule the personal-tax domain computes today. Deliberately not
 # inferred from the query text: engine.compute already rejects unknown rule
@@ -103,7 +106,24 @@ async def _narrate_node(state: QueryGraphState) -> dict:
         assumptions=state.get("assumptions"),
     )
 
-    response = await generate_narrative(system_prompt, messages)
+    try:
+        response = await generate_narrative(system_prompt, messages)
+    except Exception as exc:
+        # The LLM writes the prose; it does not produce the figures. Losing it
+        # must not lose an answer that has already been computed exactly --
+        # assemble_response falls back to rendering the trace directly. A 500
+        # here would discard correct arithmetic because the narration failed,
+        # which is the tail wagging the dog.
+        #
+        # Not silent: the response carries a note so the reader knows the
+        # explanation is missing rather than assuming there was nothing to say.
+        logger.warning("narration failed, answering from the computation: %s", exc)
+        note = "The written explanation could not be generated; the figures below are unaffected."
+        return {
+            "llm_response": None,
+            "assumptions": [*(state.get("assumptions") or []), note],
+        }
+
     answer, citations = parse_narration(response.text)
 
     return {
