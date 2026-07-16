@@ -7,13 +7,13 @@ work to the LangGraph query graph in orchestration/.
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends
-from fastapi import Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.api.auth import get_current_user
 from app.core.rbac import require_query_permission
 from app.orchestration.graphs.query_graph import run_query_graph
+from app.services.query.llm_query_understanding import QueryUnderstandingError
 from app.shared.schemas.citation import Citation
 
 router = APIRouter(prefix="/api/v1", tags=["query"])
@@ -85,4 +85,14 @@ async def query(
     user=Depends(get_current_user),
 ):
     await require_query_permission(domain, user, request)
-    return await run_query_graph(domain=domain, request=payload, user_id=user.id)
+    try:
+        return await run_query_graph(domain=domain, request=payload, user_id=user.id)
+    except QueryUnderstandingError:
+        # The LLM is the sole intent classifier (no regex/embedding
+        # fallback) -- a failed classification call is a real failure, not
+        # something to paper over with a weaker guess, so it surfaces here as
+        # an honest, retry-able error rather than a 200 with a wrong answer.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Something went wrong understanding your question. Please try again.",
+        ) from None
