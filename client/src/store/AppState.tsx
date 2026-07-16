@@ -311,16 +311,12 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         status: 'complete',
       }
 
-      // An attached file on the personal-tax workflow means "review this
-      // return", not "attach context to a question" -- route it to the
-      // analyze-return endpoint. Pick the first attachment whose bytes we still
-      // hold; other workflows keep the mock attachment behaviour.
-      const returnFile =
-        conversation.workflowId === 'personal-tax'
-          ? state.pendingAttachments
-              .map((a) => pendingFilesRef.current.get(a.id))
-              .find((f): f is File => f instanceof File)
-          : undefined
+      // The bytes of the first attachment we still hold, if any -- any
+      // workflow now, not just personal-tax.
+      const attachedFile = state.pendingAttachments
+        .map((a) => pendingFilesRef.current.get(a.id))
+        .find((f): f is File => f instanceof File)
+      const hasRealQuestion = trimmed.length > 0
 
       dispatch({ type: 'add-message', conversationId: conversation.id, message: userMessage })
       dispatch({ type: 'set-attachments', attachments: [] })
@@ -329,17 +325,26 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
       try {
         if (!accessToken) throw new Error('You need to log in again')
-        const response = returnFile
-          ? await taxApi.analyzeReturn(returnFile, accessToken)
-          : await taxApi.sendPrompt(
-              {
-                conversationId: conversation.id,
-                workflowId: conversation.workflowId,
-                prompt: userMessage.content,
-                attachments: userMessage.attachments ?? [],
-              },
-              accessToken,
-            )
+
+        const promptRequest = {
+          conversationId: conversation.id,
+          workflowId: conversation.workflowId,
+          prompt: userMessage.content,
+          attachments: userMessage.attachments ?? [],
+        }
+
+        // A real typed question alongside an attached file means "answer
+        // this using the document" -- goes through the document-aware query
+        // flow, on any workflow. A file with no question typed keeps the
+        // existing personal-tax "review this return" behaviour (analyze-
+        // return); other workflows with a file but no question fall back to
+        // the plain text flow, same as before this file existed.
+        const response =
+          attachedFile && hasRealQuestion
+            ? await taxApi.sendPromptWithDocument(promptRequest, attachedFile, accessToken)
+            : attachedFile && conversation.workflowId === 'personal-tax'
+              ? await taxApi.analyzeReturn(attachedFile, accessToken)
+              : await taxApi.sendPrompt(promptRequest, accessToken)
         dispatch({ type: 'add-message', conversationId: conversation.id, message: response.message })
         dispatch({ type: 'set-follow-ups', followUps: response.followUps })
       } catch (error) {

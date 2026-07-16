@@ -93,9 +93,15 @@ _CAPITAL_GAINS_MARKERS = (
     "property sale",
 )
 
-# Words that indicate the number following is not an amount.
+# Words that indicate the number following is not an amount. The trailing
+# (?:-\d{2,4})? covers the common Indian FY/AY range notation ("FY 2024-25",
+# "AY 2025-2026") -- without it, the "-25" suffix is left as an unmatched,
+# separate number that both parse_amount and _find_amounts would otherwise
+# misread as a standalone amount.
 _YEAR_CONTEXT = re.compile(
-    r"\b(?:a\.?y\.?|f\.?y\.?|assessment|financial)\s*year\b|\b(?:ay|fy)\s*\d{4}", re.IGNORECASE
+    r"\b(?:a\.?y\.?|f\.?y\.?|assessment|financial)\s*year\b"
+    r"|\b(?:ay|fy)\s*\d{4}(?:-\d{2,4})?",
+    re.IGNORECASE,
 )
 
 # How far from a label an amount may sit and still be claimed by it. Wide enough
@@ -178,12 +184,29 @@ def parse_amount(text: str) -> float | None:
     """Parse a single Indian-notation amount. Returns None if unparseable.
 
     Exposed for direct unit testing -- the numeral handling is the part most
-    likely to break silently.
+    likely to break silently. Skips a match whose own span falls inside a
+    year-context match (e.g. the "2024" in "FY 2024-25") and tries the next
+    one, rather than confidently returning a year as if it were a rupee
+    amount -- caught by a real evidence_span from a document-extraction path
+    (services/query/llm_query_understanding.py's reuse of this function
+    against uploaded-document text, where a line like "Gross Salary for FY
+    2024-25 is Rs 21,00,000" previously parsed as 2024 rather than
+    2,100,000). Deliberately span-overlap, not proximity: a nearby-window
+    check (as _find_amounts uses for a different purpose -- discarding every
+    year-labeled amount in a whole query) would also wrongly exclude the
+    real amount here, since "21,00,000" sits only a few characters after
+    "FY 2024-25" in that same sentence.
     """
-    match = _AMOUNT_PATTERN.search(text.strip())
-    if not match:
-        return None
-    return _amount_from_match(match)
+    stripped = text.strip()
+    year_spans = [match.span() for match in _YEAR_CONTEXT.finditer(stripped)]
+
+    for match in _AMOUNT_PATTERN.finditer(stripped):
+        if any(match.start() < end and match.end() > start for start, end in year_spans):
+            continue
+        value = _amount_from_match(match)
+        if value is not None:
+            return value
+    return None
 
 
 def _find_amounts(query: str) -> list[_Amount]:

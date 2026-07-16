@@ -1,14 +1,22 @@
 """The actual LangGraph implementation wiring the full query flow:
 
     intent classify -> temporal resolve
-        -> [uploaded document?] -> document_extraction -> computation
+        -> [document attached + rule known (explicit request, or inferred
+            from the query text)] -> document_extraction -> computation
         -> [computation_request given] -> computation
         -> [free-text query, rule inferred] -> computation
-        -> [pure text query / rule not inferred] -> retrieval -> narrate -> evidence_gate
+        -> [retrieval-intent, or no rule known] -> retrieval -> narrate -> evidence_gate
     computation -> [computed] -> ground_truth_check -> computation_citations -> assemble_response -> audit_log
     computation -> [rule not inferred at all] -> computation_fallback -> retrieval
     computation -> [rule known but fields missing] -> assemble_response -> audit_log
     evidence_gate -> assemble_response -> audit_log
+
+A document attached to a retrieval-intent query (or one with no computation
+rule identified, e.g. Notices) is not discarded -- retrieval prepends it as
+an extra citable context chunk ahead of narration, so general/explanatory
+questions about an attached document are answered grounded in it, through
+the same evidence-gate verification already used for the statutory
+knowledge base (see _uploaded_document_chunk).
 
 Node functions here are thin wrappers that call straight into services/* --
 this file contains no business logic itself, only graph wiring and state
@@ -28,7 +36,11 @@ from app.services.computation.computation_trace import ComputationTrace
 from app.services.computation.engine import MissingComputationInputError, compute
 from app.services.query.input_extractor import clarification_questions
 from app.services.query.intent_classifier_types import Intent
-from app.services.query.llm_query_understanding import QueryUnderstandingError, classify_and_extract
+from app.services.query.llm_query_understanding import (
+    QueryUnderstandingError,
+    classify_and_extract,
+    extract_personal_regime_fields_from_document,
+)
 from app.services.query.temporal_resolver import resolve_as_of
 from app.services.rag.document_lookup import resolve_document_names
 from app.services.rag.evidence_gate import (
@@ -38,7 +50,7 @@ from app.services.rag.evidence_gate import (
     verify_citations,
 )
 from app.services.rag.extraction.document_extraction import (
-    extract_capital_gains_inputs,
+    extract_fields_for_rule,
     verified_fields_to_computation_inputs,
 )
 from app.services.rag.ground_truth_gate import (
@@ -53,7 +65,16 @@ from app.shared.llm.base import LLMMessage
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DOCUMENT_RULE_NAME = "capital_gains"
+
+def _known_rule_name(state: QueryGraphState) -> str | None:
+    """The rule to act on, using the same precedence _computation_node
+    already applies: an explicit computation_request wins, otherwise fall
+    back to whatever classify_intent inferred from the query text (may be
+    None -- the LLM was not confident enough to name one)."""
+    computation_request = state.get("computation_request")
+    if computation_request is not None:
+        return computation_request["rule_name"]
+    return state.get("rule_name")
 
 
 async def _classify_intent_node(state: QueryGraphState) -> dict:
@@ -99,9 +120,31 @@ async def _resolve_temporal_node(state: QueryGraphState) -> dict:
 
 
 async def _document_extraction_node(state: QueryGraphState) -> dict:
-    logger.info("[FLOW] document_extraction: calling OpenAI LLM to extract fields from uploaded document")
-    extracted = await extract_capital_gains_inputs(state["uploaded_document_text"])
-    inputs, missing = verified_fields_to_computation_inputs(extracted)
+    # _route_after_temporal only sends a query here once a rule is already
+    # known (explicit computation_request, or classify_intent inferred one
+    # from the query text) -- see _known_rule_name for the shared precedence.
+    rule_name = _known_rule_name(state)
+    document_text = state["uploaded_document_text"]
+
+    logger.info(
+        "[FLOW] document_extraction: rule_name=%s -- calling OpenAI LLM to "
+        "extract fields from uploaded document", rule_name,
+    )
+
+    if rule_name == "personal_regime_comparison":
+        # Reuses the same evidence-span + re-derived-amount extraction
+        # llm_query_understanding.py's classify_and_extract already uses for
+        # the query-text path, pointed at the document instead -- one
+        # number-provenance guarantee, not two.
+        extracted_inputs = await extract_personal_regime_fields_from_document(document_text)
+        inputs = extracted_inputs.to_rule_inputs()
+        missing = list(extracted_inputs.missing)
+        assumptions = list(state.get("assumptions") or []) + list(extracted_inputs.assumptions)
+    else:
+        extracted = await extract_fields_for_rule(rule_name, document_text)
+        inputs, missing = verified_fields_to_computation_inputs(rule_name, extracted)
+        assumptions = list(state.get("assumptions") or [])
+
     logger.info(
         "[FLOW] document_extraction: verified_fields=%s missing_fields=%s",
         list(inputs), missing,
@@ -110,18 +153,26 @@ async def _document_extraction_node(state: QueryGraphState) -> dict:
     result: dict[str, Any] = {
         "extracted_inputs": inputs,
         "extraction_missing_fields": missing,
+        "assumptions": assumptions,
     }
     # Only auto-build a computation_request when every required field was
     # verified, and only if the caller didn't already supply one explicitly.
     if not missing and state.get("computation_request") is None:
         result["computation_request"] = {
-            "rule_name": _DEFAULT_DOCUMENT_RULE_NAME,
+            "rule_name": rule_name,
             "inputs": inputs,
         }
     return result
 
 
 async def _computation_node(state: QueryGraphState) -> dict:
+    # Bound here, not just in the personal_regime_comparison branch below --
+    # a computation_request built by _document_extraction_node for
+    # personal_regime_comparison reaches the `if computation_request is not
+    # None` branch, which never touched this variable before, and the
+    # `if rule_name == "personal_regime_comparison": result["assumptions"]`
+    # line further down needs it regardless of which branch ran.
+    assumptions = list(state.get("assumptions") or [])
     computation_request = state.get("computation_request")
     if computation_request is not None:
         rule_name = computation_request["rule_name"]
@@ -162,7 +213,6 @@ async def _computation_node(state: QueryGraphState) -> dict:
             # and re-parsing that makes these numbers trustworthy.
             inputs = state.get("parsed_query_inputs") or {}
             missing = state.get("parsed_query_missing_fields") or []
-            assumptions = list(state.get("assumptions") or [])
             logger.info(
                 "[FLOW] computation: personal_regime_comparison using LLM-parsed "
                 "inputs=%s missing=%s",
@@ -202,6 +252,24 @@ async def _computation_node(state: QueryGraphState) -> dict:
                 "status": "missing_data",
                 "rule_name": rule_name,
                 "missing_fields": exc.missing_fields,
+            }
+        }
+    except ValueError as exc:
+        # A rule function's own domain-specific rejection (e.g.
+        # capital_gains.compute_capital_gains raising when CII indexation
+        # figures are needed but not among CapitalGainsInput's declared
+        # fields, so document extraction/computation_inputs can never
+        # supply them) -- an honest "here's what's missing and why", never
+        # an unhandled 500, same as MissingComputationInputError above.
+        logger.warning(
+            "[FLOW] computation: rule_name=%s rejected its inputs: %s", rule_name, exc,
+        )
+        return {
+            "computation_result": {
+                "status": "missing_data",
+                "rule_name": rule_name,
+                "missing_fields": [],
+                "clarification": str(exc),
             }
         }
 
@@ -253,11 +321,42 @@ async def _ground_truth_check_node(state: QueryGraphState) -> dict:
     }
 
 
+# Keeps the synthetic chunk's content bounded so one large attachment can't
+# blow the narration prompt's context budget. No internal chunking/semantic
+# search over the user's own document in this pass -- the whole (capped)
+# text becomes a single citable context block, which is fine for a typical
+# single-document attachment.
+_MAX_UPLOADED_DOCUMENT_CHARS = 6000
+
+
+def _uploaded_document_chunk(document_text: str) -> dict:
+    """A synthetic RetrievedChunk-shaped dict for the user's own uploaded
+    document, so it flows through the exact same numbered [N] citation and
+    evidence-gate verification machinery already used for statutory KG
+    chunks -- clearly labeled (section_reference) as distinct from the
+    statutory knowledge base rather than conflated with it."""
+    return {
+        "chunk_id": "uploaded-document",
+        "source_id": "uploaded-document",
+        "document_id": None,
+        "content": document_text[:_MAX_UPLOADED_DOCUMENT_CHARS],
+        "section_reference": "Your uploaded document",
+        "score": 1.0,
+    }
+
+
 async def _retrieval_node(state: QueryGraphState) -> dict:
     logger.info("[FLOW] retrieval: hitting Pinecone/Neo4j (hybrid_search)")
     chunks = await hybrid_search(state["query"], state["as_of"])
     logger.info("[FLOW] retrieval: hybrid_search returned %d chunk(s)", len(chunks))
-    return {"retrieved_chunks": [c.model_dump() for c in chunks]}
+
+    chunk_dicts = [c.model_dump() for c in chunks]
+    uploaded_text = state.get("uploaded_document_text")
+    if uploaded_text:
+        logger.info("[FLOW] retrieval: prepending uploaded document as citable context")
+        chunk_dicts = [_uploaded_document_chunk(uploaded_text), *chunk_dicts]
+
+    return {"retrieved_chunks": chunk_dicts}
 
 
 async def _clear_computation_fallback_node(state: QueryGraphState) -> dict:
@@ -319,8 +418,18 @@ async def _evidence_gate_node(state: QueryGraphState) -> dict:
 
 
 def _route_after_temporal(state: QueryGraphState) -> str:
-    if state.get("uploaded_document_text"):
-        logger.info("[FLOW] route_after_temporal: document attached -> document_extraction -> computation")
+    # Only force structured-field extraction once a rule is actually known
+    # (explicit computation_request, or classify_intent inferred one from
+    # the query text) -- otherwise a general/explanatory question about an
+    # attached document (or a Notices query, which has no computation rules
+    # at all) would be wrongly forced through capital-gains-shaped field
+    # extraction. Those fall through to retrieval below instead, where
+    # _retrieval_node injects the document as citable narration context.
+    if state.get("uploaded_document_text") and _known_rule_name(state) is not None:
+        logger.info(
+            "[FLOW] route_after_temporal: document attached + rule_name=%s known "
+            "-> document_extraction -> computation", _known_rule_name(state),
+        )
         return "document_extraction"
     if state.get("computation_request") is not None:
         logger.info("[FLOW] route_after_temporal: computation_request given -> computation")

@@ -2,21 +2,31 @@
 computation architecture. Reuses the existing auth dependency
 (app.api.auth.get_current_user) for request attribution; delegates all actual
 work to the LangGraph query graph in orchestration/.
+
+POST /api/v1/{domain}/query/with-document is the same entrypoint plus a
+user-attached file: text is extracted server-side (reusing the same
+pdf_parser/docx_parser already proven by ingestion and analyze-return) and
+fed into the graph as `uploaded_document_text`, on any domain -- not just
+personal-tax's separate, unrelated analyze-return pipeline.
 """
 
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
 
 from app.api.auth import get_current_user
 from app.core.rbac import require_query_permission
 from app.orchestration.graphs.query_graph import run_query_graph
+from app.services.ingestion.parsing.docx_parser import parse_docx
+from app.services.ingestion.parsing.pdf_parser import parse_pdf
 from app.services.query.llm_query_understanding import QueryUnderstandingError
 from app.shared.schemas.citation import Citation
 
 router = APIRouter(prefix="/api/v1", tags=["query"])
+
+_TEXT_EXTENSIONS = (".txt", ".csv")
 
 
 class ComputationRequest(BaseModel):
@@ -92,6 +102,55 @@ async def query(
         # fallback) -- a failed classification call is a real failure, not
         # something to paper over with a weaker guess, so it surfaces here as
         # an honest, retry-able error rather than a 200 with a wrong answer.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Something went wrong understanding your question. Please try again.",
+        ) from None
+
+
+def _extract_document_text(filename: str, content: bytes) -> str:
+    lower_name = filename.lower()
+    if lower_name.endswith(".pdf"):
+        return parse_pdf(content)
+    if lower_name.endswith(".docx"):
+        return parse_docx(content)
+    if lower_name.endswith(_TEXT_EXTENSIONS):
+        return content.decode("utf-8", errors="replace")
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            f"Unsupported file type for {filename!r} -- attach a PDF, DOCX, "
+            "TXT, or CSV file."
+        ),
+    )
+
+
+@router.post("/{domain}/query/with-document", response_model=QueryResponse)
+async def query_with_document(
+    domain: str,
+    request: Request,
+    file: UploadFile,
+    query: str = Form(...),
+    as_of_date: date | None = Form(default=None),
+    session_id: str | None = Form(default=None),
+    user=Depends(get_current_user),
+):
+    await require_query_permission(domain, user, request)
+
+    content = await file.read()
+    document_text = _extract_document_text(file.filename or "", content)
+
+    payload = QueryRequest(
+        query=query,
+        as_of_date=as_of_date,
+        session_id=session_id,
+        uploaded_document_text=document_text,
+    )
+
+    try:
+        return await run_query_graph(domain=domain, request=payload, user_id=user.id)
+    except QueryUnderstandingError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Something went wrong understanding your question. Please try again.",

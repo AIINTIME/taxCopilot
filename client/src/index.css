@@ -826,7 +826,6 @@ a:focus-visible {
 .primary-nav__item,
 .project-item,
 .history-item,
-.suggested-prompts button,
 .message-actions button,
 .widget button {
   border: 1px solid #d7dfeb;
@@ -1344,7 +1343,7 @@ a:focus-visible {
 
 .chat-workspace {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   height: 100vh;
   height: 100%;
   position: relative;
@@ -1465,8 +1464,7 @@ a:focus-visible {
 
 .message-attachments,
 .attachment-row,
-.message-actions,
-.suggested-prompts {
+.message-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -4082,25 +4080,22 @@ th {
   font-size: 13px;
 }
 
-.suggested-prompts {
-  max-width: 960px;
-  width: calc(100% - 64px);
-  margin: 0 auto 10px;
-}
-
-.suggested-prompts button {
-  padding: 8px 11px;
-  color: #475467;
-  background: #ffffff;
-  font-size: 13px;
-}
-
 .composer-shell {
   position: relative;
   max-width: 960px;
   width: calc(100% - 64px);
   margin: 0 auto;
   padding-bottom: 20px;
+}
+
+.composer__file-error {
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  color: #991b1b;
+  background: #fff1f2;
+  font-size: 13px;
 }
 
 .composer {
@@ -5223,7 +5218,6 @@ th {
 :root[data-theme="dark"] .metric-grid article,
 :root[data-theme="dark"] .empty-grid article,
 :root[data-theme="dark"] .composer,
-:root[data-theme="dark"] .suggested-prompts button,
 :root[data-theme="dark"] .icon-button,
 :root[data-theme="dark"] .composer__icon,
 :root[data-theme="dark"] .primary-nav__item,
@@ -5387,7 +5381,6 @@ th {
 :root[data-theme="dark"] .history-item,
 :root[data-theme="dark"] .message-actions button,
 :root[data-theme="dark"] .widget button,
-:root[data-theme="dark"] .suggested-prompts button,
 :root[data-theme="dark"] .profile-trigger {
   border-color: rgba(71, 85, 105, 0.9);
   color: #e2e8f0;
@@ -5397,7 +5390,6 @@ th {
 :root[data-theme="dark"] .primary-nav__item:hover,
 :root[data-theme="dark"] .project-item:hover,
 :root[data-theme="dark"] .history-item:hover,
-:root[data-theme="dark"] .suggested-prompts button:hover,
 :root[data-theme="dark"] .message-actions button:hover,
 :root[data-theme="dark"] .widget button:hover {
   border-color: rgba(96, 165, 250, 0.56);
@@ -5459,6 +5451,12 @@ th {
 }
 
 :root[data-theme="dark"] .attachment-chip.is-error {
+  border-color: rgba(248, 113, 113, 0.58);
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.42);
+}
+
+:root[data-theme="dark"] .composer__file-error {
   border-color: rgba(248, 113, 113, 0.58);
   color: #fecaca;
   background: rgba(127, 29, 29, 0.42);
@@ -6001,8 +5999,7 @@ th {
     grid-template-columns: 1fr;
   }
 
-  .composer-shell,
-  .suggested-prompts {
+  .composer-shell {
     width: calc(100% - 24px);
   }
 

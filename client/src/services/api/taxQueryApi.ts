@@ -309,6 +309,20 @@ export function widgetsFromQueryResponse(response: QueryResponse): ResponseWidge
   return widgets
 }
 
+async function handleQueryResponse(response: Response): Promise<QueryResponse> {
+  if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error('Your session has expired. Please log in again.')
+    }
+    const detail = await response.text().catch(() => '')
+    throw new Error(
+      detail ? `Assistant request failed: ${detail}` : 'Assistant request failed',
+    )
+  }
+
+  return (await response.json()) as QueryResponse
+}
+
 export async function queryTax(
   domain: string,
   prompt: string,
@@ -324,15 +338,32 @@ export async function queryTax(
     body: JSON.stringify({ query: prompt }),
   })
 
-  if (!response.ok) {
-    if (response.status === 401) {
-      throw new Error('Your session has expired. Please log in again.')
-    }
-    const detail = await response.text().catch(() => '')
-    throw new Error(
-      detail ? `Assistant request failed: ${detail}` : 'Assistant request failed',
-    )
-  }
+  return handleQueryResponse(response)
+}
 
-  return (await response.json()) as QueryResponse
+// Companion to queryTax for a question asked alongside an attached document
+// (any workflow) -- the file's text is extracted server-side and fed into
+// the same query graph as `uploaded_document_text`, so the answer (a real
+// computation or a grounded, cited explanation) is based on the document's
+// actual content, not just the typed question.
+export async function queryTaxWithDocument(
+  domain: string,
+  prompt: string,
+  file: File,
+  accessToken: string | null,
+): Promise<QueryResponse> {
+  const formData = new FormData()
+  formData.append('query', prompt)
+  formData.append('file', file)
+
+  const response = await fetch(`${API_BASE_URL}/api/v1/${domain}/query/with-document`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+    body: formData,
+  })
+
+  return handleQueryResponse(response)
 }

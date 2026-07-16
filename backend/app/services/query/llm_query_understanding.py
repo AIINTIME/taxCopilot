@@ -35,10 +35,18 @@ from app.services.computation.rules.personal.regime_comparison_personal import I
 from app.services.query.input_extractor import ExtractedInputs, detect_income_type, parse_amount
 from app.services.query.intent_classifier_types import Intent
 from app.services.rag.llm_client import generate_narrative
-from app.services.rag.prompts.query_understanding_prompts import QUERY_UNDERSTANDING_SYSTEM_PROMPT
+from app.services.rag.prompts.query_understanding_prompts import (
+    PERSONAL_REGIME_DOCUMENT_EXTRACTION_PROMPT,
+    QUERY_UNDERSTANDING_SYSTEM_PROMPT,
+)
 from app.shared.llm.base import LLMMessage
 
-__all__ = ["QueryUnderstanding", "QueryUnderstandingError", "classify_and_extract"]
+__all__ = [
+    "QueryUnderstanding",
+    "QueryUnderstandingError",
+    "classify_and_extract",
+    "extract_personal_regime_fields_from_document",
+]
 
 _AMOUNT_FIELDS = ("gross_income", *SECTION_LABELS)
 
@@ -195,3 +203,30 @@ async def classify_and_extract(query: str) -> QueryUnderstanding:
         extracted = _extract_inputs_from_fields(data.get("fields"), query)
 
     return QueryUnderstanding(intent=intent, rule_name=rule_name, extracted=extracted)
+
+
+async def extract_personal_regime_fields_from_document(document_text: str) -> ExtractedInputs:
+    """Same evidence-span + re-derived-amount extraction as classify_and_extract
+    uses for personal_regime_comparison, pointed at an uploaded document's
+    text instead of the chat query. Reuses _extract_inputs_from_fields
+    directly rather than a second implementation of the same number-
+    provenance guarantee -- the LLM's own numeric value is still discarded
+    and re-derived from the verified evidence span via parse_amount.
+
+    Called by orchestration/graphs/query_graph.py's _document_extraction_node
+    when the query's rule_name (already determined by classify_and_extract
+    against the query text) is personal_regime_comparison."""
+    response = await generate_narrative(
+        system_prompt=PERSONAL_REGIME_DOCUMENT_EXTRACTION_PROMPT,
+        messages=[LLMMessage(role="user", content=document_text)],
+    )
+    try:
+        data = _parse_response(response.text)
+    except QueryUnderstandingError:
+        # Unlike classify_and_extract's routing call, a malformed response
+        # here should degrade to "nothing extracted" (missing fields, same
+        # as document_extraction.py's other rules on a bad LLM response),
+        # not abort the whole query -- the document path is a bonus on top
+        # of a query that already classified successfully.
+        data = {}
+    return _extract_inputs_from_fields(data.get("fields"), document_text)

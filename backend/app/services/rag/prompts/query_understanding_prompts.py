@@ -72,3 +72,44 @@ fields:
   directly as a single figure, and let evidence_span carry the original
   wording (including any unit like "lakhs" or "lpa").
 """
+
+# Same field schema as QUERY_UNDERSTANDING_SYSTEM_PROMPT's "fields" section,
+# but standalone -- used when the source text is an uploaded document rather
+# than the chat query, where intent/rule_name are already known (the rule
+# came from classify_and_extract's earlier call against the query text) and
+# only the personal_regime_comparison figures need extracting.
+PERSONAL_REGIME_DOCUMENT_EXTRACTION_PROMPT = """You are a tax document field extractor.
+
+Given the text of a user's document (e.g. a filed return, Form 16, or salary
+slip), extract the fields needed to compute a personal income-tax regime
+comparison -- if and only if they are explicitly stated in the text. Respond
+with ONLY a valid JSON object. No markdown fences, no explanation, no preamble.
+
+Schema:
+{
+  "fields": {
+    "gross_income": {"value": number, "evidence_span": string} | null,
+    "income_type": {"value": "salary" | "business", "evidence_span": string} | null,
+    "section_80c": {"value": number, "evidence_span": string} | null,
+    "section_80d": {"value": number, "evidence_span": string} | null,
+    "section_80g": {"value": number, "evidence_span": string} | null,
+    "section_80tta": {"value": number, "evidence_span": string} | null,
+    "home_loan_interest_24b": {"value": number, "evidence_span": string} | null,
+    "hra_exemption": {"value": number, "evidence_span": string} | null,
+    "employer_nps_80ccd2": {"value": number, "evidence_span": string} | null
+  }
+}
+
+Rules you must follow:
+- Set a field to null if it is not explicitly stated in the text -- do NOT
+  infer, estimate, round, or guess a value.
+- evidence_span MUST be copied verbatim as a substring from the document text
+  (the exact phrase that states the value) -- if you cannot find a verbatim
+  substring supporting a field, set that field to null.
+- "income_type" is "salary" for salaried/employment/CTC income, "business"
+  for business/professional/freelance income. Set to null if not stated.
+- Do NOT combine or calculate values (e.g. do not sum multiple figures into a
+  total, do not convert units yourself) -- extract only values stated
+  directly as a single figure, and let evidence_span carry the original
+  wording (including any unit like "lakhs" or "lpa").
+"""
