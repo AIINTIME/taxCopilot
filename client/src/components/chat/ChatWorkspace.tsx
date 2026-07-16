@@ -76,13 +76,6 @@ export function ChatWorkspace({ workflow }: ChatWorkspaceProps) {
       onDrop={handleDrop}
     >
       <DragUploadOverlay workflow={workflow} activeCategory={dragCategory} />
-      <header className="workspace-header">
-        <div>
-          <p>{workflow.shortName} workflow</p>
-          <h1>{workflow.name}</h1>
-        </div>
-        <span>{workflow.purpose}</span>
-      </header>
 
       <div className="message-scroll">
         {messages.length === 0 ? (

@@ -8,6 +8,8 @@ type AppAction =
   | { type: 'set-workflow'; workflowId: WorkflowId }
   | { type: 'set-active'; conversationId: string }
   | { type: 'upsert-conversation'; conversation: Conversation }
+  | { type: 'rename-conversation'; conversationId: string; title: string }
+  | { type: 'delete-conversation'; conversationId: string }
   | { type: 'add-message'; conversationId: string; message: Message }
   | { type: 'update-conversation'; conversation: Conversation }
   | { type: 'set-attachments'; attachments: Attachment[] }
@@ -84,6 +86,39 @@ function reducer(state: AppState, action: AppAction): AppState {
       : [action.conversation, ...state.conversations]
 
     return { ...state, conversations, activeConversationId: action.conversation.id }
+  }
+
+  if (action.type === 'rename-conversation') {
+    const title = action.title.trim()
+    if (!title) return state
+
+    return {
+      ...state,
+      conversations: state.conversations.map((conversation) =>
+        conversation.id === action.conversationId
+          ? { ...conversation, title, updatedAt: new Date().toISOString() }
+          : conversation,
+      ),
+    }
+  }
+
+  if (action.type === 'delete-conversation') {
+    const conversations = state.conversations.filter(
+      (conversation) => conversation.id !== action.conversationId,
+    )
+    const activeConversationId = state.activeConversationId === action.conversationId
+      ? conversations[0]?.id ?? null
+      : state.activeConversationId
+
+    return {
+      ...state,
+      conversations,
+      activeConversationId,
+      selectedWorkflowId: conversations.find((conversation) => conversation.id === activeConversationId)?.workflowId
+        ?? state.selectedWorkflowId,
+      error: null,
+      followUps: [],
+    }
   }
 
   if (action.type === 'add-message') {
@@ -163,6 +198,14 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   const selectConversation = useCallback((conversationId: string) => {
     dispatch({ type: 'set-active', conversationId })
+  }, [])
+
+  const renameConversation = useCallback((conversationId: string, title: string) => {
+    dispatch({ type: 'rename-conversation', conversationId, title })
+  }, [])
+
+  const deleteConversation = useCallback((conversationId: string) => {
+    dispatch({ type: 'delete-conversation', conversationId })
   }, [])
 
   const setWorkflow = useCallback((workflowId: WorkflowId) => {
@@ -276,6 +319,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       activeConversation,
       startConversation,
       selectConversation,
+      renameConversation,
+      deleteConversation,
       setWorkflow,
       uploadFiles,
       removeAttachment,
@@ -285,7 +330,9 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     }),
     [
       activeConversation,
+      deleteConversation,
       removeAttachment,
+      renameConversation,
       retryLastPrompt,
       selectConversation,
       sendPrompt,

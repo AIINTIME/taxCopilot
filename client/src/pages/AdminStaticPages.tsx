@@ -9,11 +9,17 @@ import {
   Server,
   ShieldCheck,
   SlidersHorizontal,
+  Save,
+  Trash2,
   Upload,
   Users,
   Zap,
 } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import type { FormEvent, ReactNode } from 'react'
+import { adminApi } from '../services/api/adminApi'
+import type { PermissionItem, RoleItem } from '../services/api/adminApi'
+import { useAdminAuth } from '../store/useAdminAuth'
 
 type AdminStaticPageProps = {
   eyebrow: string
@@ -134,35 +140,203 @@ export function AdminDocumentsPage() {
 }
 
 export function AdminRolesPage() {
+  const { accessToken } = useAdminAuth()
+  const [permissions, setPermissions] = useState<PermissionItem[]>([])
+  const [roles, setRoles] = useState<RoleItem[]>([])
+  const [selectedRole, setSelectedRole] = useState<RoleItem | null>(null)
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [permissionKeys, setPermissionKeys] = useState<string[]>([])
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  async function loadRbac() {
+    if (!accessToken) return
+    setError('')
+    try {
+      const [nextPermissions, nextRoles] = await Promise.all([
+        adminApi.getPermissions(accessToken),
+        adminApi.getRoles(accessToken),
+      ])
+      setPermissions(nextPermissions)
+      setRoles(nextRoles)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to load roles')
+    }
+  }
+
+  useEffect(() => {
+    void loadRbac()
+  }, [accessToken])
+
+  const permissionsByCategory = useMemo(() => {
+    return permissions.reduce<Record<string, PermissionItem[]>>((groups, permission) => {
+      groups[permission.category] = [...(groups[permission.category] ?? []), permission]
+      return groups
+    }, {})
+  }, [permissions])
+
+  function resetForm() {
+    setSelectedRole(null)
+    setName('')
+    setDescription('')
+    setPermissionKeys([])
+  }
+
+  function editRole(role: RoleItem) {
+    setSelectedRole(role)
+    setName(role.name)
+    setDescription(role.description ?? '')
+    setPermissionKeys(role.permission_keys)
+    setMessage('')
+    setError('')
+  }
+
+  function togglePermission(key: string) {
+    setPermissionKeys((current) => (
+      current.includes(key)
+        ? current.filter((item) => item !== key)
+        : [...current, key]
+    ))
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!accessToken) return
+
+    setIsSubmitting(true)
+    setError('')
+    setMessage('')
+
+    try {
+      if (selectedRole) {
+        const updatedRole = await adminApi.updateRole(accessToken, selectedRole.id, {
+          name,
+          description: description || null,
+          permission_keys: permissionKeys,
+        })
+        setRoles((current) => current.map((role) => (role.id === updatedRole.id ? updatedRole : role)))
+        setSelectedRole(updatedRole)
+        setMessage(`Updated ${updatedRole.name}.`)
+      } else {
+        const createdRole = await adminApi.createRole(accessToken, {
+          name,
+          description: description || null,
+          permission_keys: permissionKeys,
+        })
+        setRoles((current) => [...current, createdRole])
+        resetForm()
+        setMessage(`Created ${createdRole.name}.`)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to save role')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function handleDelete(role: RoleItem) {
+    if (!accessToken || role.is_system) return
+
+    setIsSubmitting(true)
+    setError('')
+    setMessage('')
+    try {
+      await adminApi.deleteRole(accessToken, role.id)
+      setRoles((current) => current.filter((item) => item.id !== role.id))
+      if (selectedRole?.id === role.id) resetForm()
+      setMessage(`Deleted ${role.name}.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to delete role')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   return (
-    <AdminStaticPage
-      eyebrow="Permissions"
-      title="Roles & Permissions"
-      description="Define access levels for admins, reviewers, and standard users."
-      icon={<ShieldCheck size={24} />}
-      metrics={[
-        { label: 'Admin roles', value: '3', detail: 'Owner, Admin, Reviewer' },
-        { label: 'Policies', value: '12', detail: 'Static permission rules' },
-        { label: 'Reviews', value: '4', detail: 'Changes awaiting sign-off' },
-      ]}
-      primary={{
-        title: 'Role Matrix',
-        rows: [
-          { title: 'Owner', meta: 'Full organization and billing controls', status: 'Full' },
-          { title: 'Admin', meta: 'Manage users, documents, and settings', status: 'Manage' },
-          { title: 'Reviewer', meta: 'Approve document and rule proposals', status: 'Review' },
-          { title: 'User', meta: 'Access tax workflows and research tools', status: 'Use' },
-        ],
-      }}
-      secondary={{
-        title: 'Permission Areas',
-        items: [
-          { icon: <Users size={16} />, title: 'User access', detail: 'Create and deactivate users' },
-          { icon: <FileText size={16} />, title: 'Document review', detail: 'Approve source updates' },
-          { icon: <KeyRound size={16} />, title: 'Credential policy', detail: 'Password reset controls' },
-        ],
-      }}
-    />
+    <section className="admin-static-page">
+      <div className="admin-static-hero">
+        <div className="admin-static-hero__icon"><ShieldCheck size={24} /></div>
+        <div>
+          <p>Permissions</p>
+          <h2>Roles & Permissions</h2>
+          <span>Define access levels for users across the normal workspace.</span>
+        </div>
+      </div>
+
+      <div className="admin-static-metrics">
+        <article><span>Roles</span><strong>{roles.length}</strong><small>Organization roles</small></article>
+        <article><span>Permissions</span><strong>{permissions.length}</strong><small>Operation-level grants</small></article>
+        <article><span>Assigned users</span><strong>{roles.reduce((sum, role) => sum + role.user_count, 0)}</strong><small>Role memberships</small></article>
+      </div>
+
+      {error ? <p className="admin-form-error">{error}</p> : null}
+      {message ? <p className="admin-form-success"><CheckCircle2 size={14} />{message}</p> : null}
+
+      <div className="admin-rbac-layout">
+        <div className="admin-rbac-list">
+          {roles.map((role) => (
+            <article key={role.id} className={selectedRole?.id === role.id ? 'is-selected' : ''}>
+              <button type="button" onClick={() => editRole(role)}>
+                <strong>{role.name}</strong>
+                <span>{role.permission_keys.length} permissions · {role.user_count} users</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDelete(role)}
+                disabled={role.is_system || isSubmitting}
+                title={role.is_system ? 'System roles cannot be deleted' : 'Delete role'}
+              >
+                <Trash2 size={15} />
+              </button>
+            </article>
+          ))}
+        </div>
+
+        <form className="admin-rbac-editor" onSubmit={handleSubmit}>
+          <header>
+            <div>
+              <p>{selectedRole ? 'Edit role' : 'New role'}</p>
+              <h3>{selectedRole?.name ?? 'Create Role'}</h3>
+            </div>
+            {selectedRole ? <button type="button" onClick={resetForm}>New role</button> : null}
+          </header>
+          <label>
+            <span>Name</span>
+            <input value={name} onChange={(event) => setName(event.target.value)} minLength={2} required />
+          </label>
+          <label>
+            <span>Description</span>
+            <textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={240} />
+          </label>
+          <div className="admin-permission-groups">
+            {Object.entries(permissionsByCategory).map(([category, items]) => (
+              <section key={category}>
+                <h4>{category}</h4>
+                {items.map((permission) => (
+                  <label key={permission.key}>
+                    <input
+                      type="checkbox"
+                      checked={permissionKeys.includes(permission.key)}
+                      onChange={() => togglePermission(permission.key)}
+                    />
+                    <span>
+                      <strong>{permission.label}</strong>
+                      <small>{permission.description}</small>
+                    </span>
+                  </label>
+                ))}
+              </section>
+            ))}
+          </div>
+          <button type="submit" className="admin-primary-action" disabled={isSubmitting}>
+            <Save size={14} />
+            {selectedRole ? 'Save role' : 'Create role'}
+          </button>
+        </form>
+      </div>
+    </section>
   )
 }
 

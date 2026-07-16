@@ -49,12 +49,16 @@ class AdminUserItem(BaseModel):
     admin_id: str | None = None
     is_active: bool = True
     created_at: datetime
+    role_ids: list[str] = []
+    roles: list[str] = []
+    permissions: list[str] = []
 
 
 class AdminCreateUserRequest(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+    role_ids: list[str] = []
 
 
 class AdminUpdateUserRequest(BaseModel):
@@ -68,6 +72,40 @@ class AdminSetUserPasswordRequest(BaseModel):
 
 class AdminSetUserActiveRequest(BaseModel):
     is_active: bool
+
+
+class AdminAssignUserRolesRequest(BaseModel):
+    role_ids: list[str] = []
+
+
+class PermissionItem(BaseModel):
+    id: str
+    key: str
+    label: str
+    description: str | None = None
+    category: str
+
+
+class RoleItem(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    is_system: bool
+    permission_keys: list[str]
+    user_count: int = 0
+    created_at: datetime
+
+
+class CreateRoleRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    description: str | None = Field(default=None, max_length=240)
+    permission_keys: list[str] = []
+
+
+class UpdateRoleRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=80)
+    description: str | None = Field(default=None, max_length=240)
+    permission_keys: list[str] | None = None
 
 
 class RegisterRequest(BaseModel):
@@ -91,6 +129,8 @@ class UserResponse(BaseModel):
     profile_photo_url: str | None = None
     organization_id: str | None = None
     is_active: bool = True
+    roles: list[str] = []
+    permissions: list[str] = []
     created_at: datetime
 
 

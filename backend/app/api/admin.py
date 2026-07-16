@@ -3,17 +3,28 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 
 from app.api.admin_auth import get_current_admin
+from app.core.rbac import (
+    ensure_default_role,
+    set_role_permissions,
+    set_user_roles,
+    validate_org_roles,
+)
 from app.core.security import hash_password
 from app.db import prisma
 from app.schemas import (
+    AdminAssignUserRolesRequest,
     AdminCreateUserRequest,
     AdminSetUserActiveRequest,
     AdminSetUserPasswordRequest,
     AdminStatsResponse,
     AdminUpdateUserRequest,
     AdminUserItem,
+    CreateRoleRequest,
     DocumentUploadResponse,
+    PermissionItem,
+    RoleItem,
     RuleProposalItem,
+    UpdateRoleRequest,
 )
 from app.services.ingestion.dedup import content_hash
 from app.services.ingestion.kg_graph_extraction.pipeline import process_chunk_for_graph
@@ -23,7 +34,18 @@ from app.services.ingestion.upsert.statutory_kg_upsert import upsert_chunk_to_st
 router = APIRouter(tags=["admin"])
 
 
-def serialize_admin_user(user) -> AdminUserItem:
+async def serialize_admin_user(user) -> AdminUserItem:
+    assignments = await prisma.userrole.find_many(
+        where={"userId": user.id},
+        include={"role": {"include": {"permissions": {"include": {"permission": True}}}}},
+    )
+    permission_keys = sorted(
+        {
+            role_permission.permission.key
+            for assignment in assignments
+            for role_permission in assignment.role.permissions
+        }
+    )
     return AdminUserItem(
         id=user.id,
         name=user.name,
@@ -32,6 +54,27 @@ def serialize_admin_user(user) -> AdminUserItem:
         admin_id=user.adminId,
         is_active=user.isActive,
         created_at=user.createdAt,
+        role_ids=[assignment.role.id for assignment in assignments],
+        roles=[assignment.role.name for assignment in assignments],
+        permissions=permission_keys,
+    )
+
+
+async def serialize_role(role) -> RoleItem:
+    role_permissions = await prisma.rolepermission.find_many(
+        where={"roleId": role.id}, include={"permission": True}
+    )
+    user_count = await prisma.userrole.count(where={"roleId": role.id})
+    return RoleItem(
+        id=role.id,
+        name=role.name,
+        description=role.description,
+        is_system=role.isSystem,
+        permission_keys=sorted(
+            role_permission.permission.key for role_permission in role_permissions
+        ),
+        user_count=user_count,
+        created_at=role.createdAt,
     )
 
 
@@ -68,7 +111,7 @@ async def get_users(admin=Depends(get_current_admin)):
         order={"createdAt": "desc"},
         take=50,
     )
-    return [serialize_admin_user(u) for u in users]
+    return [await serialize_admin_user(u) for u in users]
 
 
 @router.post(
@@ -93,7 +136,12 @@ async def create_user(
             "adminId": admin.id,
         }
     )
-    return serialize_admin_user(user)
+    if payload.role_ids:
+        role_ids = await validate_org_roles(payload.role_ids, admin.organizationId)
+    else:
+        role_ids = [(await ensure_default_role(admin.organizationId)).id]
+    await set_user_roles(user.id, role_ids, admin.organizationId)
+    return await serialize_admin_user(user)
 
 
 @router.patch("/users/{user_id}", response_model=AdminUserItem)
@@ -117,10 +165,10 @@ async def update_user(
         data["email"] = normalized_email
 
     if not data:
-        return serialize_admin_user(await get_user_for_admin(user_id, admin))
+        return await serialize_admin_user(await get_user_for_admin(user_id, admin))
 
     user = await prisma.user.update(where={"id": user_id}, data=data)
-    return serialize_admin_user(user)
+    return await serialize_admin_user(user)
 
 
 @router.patch("/users/{user_id}/password", status_code=status.HTTP_204_NO_CONTENT)
@@ -147,7 +195,114 @@ async def set_user_status(
         where={"id": user_id},
         data={"isActive": payload.is_active},
     )
-    return serialize_admin_user(user)
+    return await serialize_admin_user(user)
+
+
+@router.patch("/users/{user_id}/roles", response_model=AdminUserItem)
+async def assign_user_roles(
+    user_id: str,
+    payload: AdminAssignUserRolesRequest,
+    admin=Depends(get_current_admin),
+):
+    user = await get_user_for_admin(user_id, admin)
+    await set_user_roles(user.id, payload.role_ids, admin.organizationId)
+    return await serialize_admin_user(user)
+
+
+@router.get("/permissions", response_model=list[PermissionItem])
+async def get_permissions(admin=Depends(get_current_admin)):
+    permissions = await prisma.permission.find_many(order={"category": "asc"})
+    return [
+        PermissionItem(
+            id=permission.id,
+            key=permission.key,
+            label=permission.label,
+            description=permission.description,
+            category=permission.category,
+        )
+        for permission in permissions
+    ]
+
+
+@router.get("/roles", response_model=list[RoleItem])
+async def get_roles(admin=Depends(get_current_admin)):
+    roles = await prisma.role.find_many(
+        where={"organizationId": admin.organizationId}, order={"createdAt": "asc"}
+    )
+    return [await serialize_role(role) for role in roles]
+
+
+@router.post("/roles", response_model=RoleItem, status_code=status.HTTP_201_CREATED)
+async def create_role(payload: CreateRoleRequest, admin=Depends(get_current_admin)):
+    name = payload.name.strip()
+    existing = await prisma.role.find_unique(
+        where={"name_organizationId": {"name": name, "organizationId": admin.organizationId}}
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Role name already exists in this organization",
+        )
+
+    role = await prisma.role.create(
+        data={
+            "name": name,
+            "description": payload.description.strip() if payload.description else None,
+            "organizationId": admin.organizationId,
+        }
+    )
+    await set_role_permissions(role.id, payload.permission_keys)
+    return await serialize_role(role)
+
+
+@router.patch("/roles/{role_id}", response_model=RoleItem)
+async def update_role(
+    role_id: str, payload: UpdateRoleRequest, admin=Depends(get_current_admin)
+):
+    role = await prisma.role.find_first(
+        where={"id": role_id, "organizationId": admin.organizationId}
+    )
+    if role is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
+
+    data: dict[str, str | None] = {}
+    if payload.name is not None:
+        name = payload.name.strip()
+        existing = await prisma.role.find_unique(
+            where={"name_organizationId": {"name": name, "organizationId": admin.organizationId}}
+        )
+        if existing is not None and existing.id != role.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Role name already exists in this organization",
+            )
+        data["name"] = name
+
+    if payload.description is not None:
+        data["description"] = payload.description.strip() or None
+
+    if data:
+        role = await prisma.role.update(where={"id": role.id}, data=data)
+
+    if payload.permission_keys is not None:
+        await set_role_permissions(role.id, payload.permission_keys)
+
+    return await serialize_role(role)
+
+
+@router.delete("/roles/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_role(role_id: str, admin=Depends(get_current_admin)):
+    role = await prisma.role.find_first(
+        where={"id": role_id, "organizationId": admin.organizationId}
+    )
+    if role is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
+    if role.isSystem:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="System roles cannot be deleted",
+        )
+    await prisma.role.delete(where={"id": role.id})
 
 
 @router.get("/audit-logs")

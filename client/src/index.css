@@ -983,9 +983,11 @@ a:focus-visible {
 
 .history-item {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   width: 100%;
   gap: 2px;
-  padding: 7px 9px;
+  padding: 4px;
   text-align: left;
   border-color: transparent;
   background: transparent;
@@ -997,15 +999,82 @@ a:focus-visible {
   background: #f8fafc;
 }
 
-.history-item span {
+.history-item__main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 4px 5px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+}
+
+.history-item span,
+.history-item__main span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.history-item small {
+.history-item small,
+.history-item__main small {
   color: #667085;
   font-size: 11px;
+}
+
+.history-item__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.history-item:hover .history-item__actions,
+.history-item:focus-within .history-item__actions,
+.history-item.is-active .history-item__actions {
+  opacity: 1;
+}
+
+.history-item__actions button,
+.history-item__rename button {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #667085;
+  background: transparent;
+}
+
+.history-item__actions button:hover,
+.history-item__rename button:hover {
+  border-color: #d7dfeb;
+  color: #174ea6;
+  background: #ffffff;
+}
+
+.history-item__rename {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
+  align-items: center;
+  width: 100%;
+}
+
+.history-item__rename input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid #b9cdf8;
+  border-radius: 8px;
+  color: #172033;
+  background: #ffffff;
 }
 
 .sidebar-empty {
@@ -2672,18 +2741,28 @@ th {
 
 .admin-users-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-columns: minmax(0, 1fr) 320px;
   gap: 14px;
   align-items: start;
+  min-width: 0;
 }
 
 .admin-users-panel {
   display: grid;
   gap: 14px;
+  min-width: 0;
   padding: 16px;
   border: 1px solid #1e293b;
   border-radius: 14px;
   background: #0f172a;
+}
+
+.admin-users-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
 }
 
 .admin-users-search {
@@ -2708,17 +2787,49 @@ th {
   background: transparent;
 }
 
+.admin-users-type-filter {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.admin-users-type-filter span {
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.admin-users-type-filter select {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding: 0 10px;
+  border: 1px solid rgba(71, 85, 105, 0.72);
+  border-radius: 10px;
+  color: #e2e8f0;
+  background: rgba(2, 6, 23, 0.28);
+}
+
 .admin-users-table {
   display: grid;
   gap: 6px;
+  min-width: 0;
 }
 
 .admin-users-table__head,
 .admin-users-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.2fr) minmax(220px, 1.4fr) minmax(110px, 0.6fr) minmax(80px, 0.4fr) 120px;
-  gap: 12px;
+  grid-template-columns:
+    minmax(104px, 1fr)
+    minmax(126px, 1.08fr)
+    minmax(72px, 0.62fr)
+    minmax(70px, 0.48fr)
+    minmax(62px, 0.36fr)
+    132px;
+  gap: 8px;
   align-items: center;
+  min-width: 0;
 }
 
 .admin-users-table__head {
@@ -2759,14 +2870,17 @@ th {
 
 .admin-users-row__actions {
   display: flex;
+  flex-wrap: nowrap;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 5px;
+  min-width: 132px;
 }
 
 .admin-users-row__actions button {
   display: inline-grid;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
   place-items: center;
   border: 1px solid rgba(71, 85, 105, 0.72);
   border-radius: 8px;
@@ -2962,6 +3076,206 @@ th {
   font-size: 13px;
   line-height: 1.5;
   text-transform: none;
+}
+
+.admin-role-picker {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-role-picker > span {
+  color: #cbd5e1;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.admin-role-picker label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid rgba(71, 85, 105, 0.72);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.28);
+}
+
+.admin-role-picker input {
+  width: 16px;
+  min-height: 16px;
+  accent-color: #60a5fa;
+}
+
+.admin-role-picker small {
+  color: #94a3b8;
+}
+
+.admin-rbac-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.72fr) minmax(0, 1.28fr);
+  gap: 18px;
+}
+
+.admin-rbac-list,
+.admin-rbac-editor {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.7);
+}
+
+.admin-rbac-list article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid rgba(71, 85, 105, 0.72);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.28);
+}
+
+.admin-rbac-list article.is-selected {
+  border-color: rgba(96, 165, 250, 0.76);
+  background: rgba(37, 99, 235, 0.18);
+}
+
+.admin-rbac-list button {
+  border: 0;
+  background: transparent;
+}
+
+.admin-rbac-list article > button:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 12px;
+  color: inherit;
+  text-align: left;
+}
+
+.admin-rbac-list article > button:last-child {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: #fca5a5;
+}
+
+.admin-rbac-list strong,
+.admin-rbac-list span,
+.admin-rbac-editor p,
+.admin-rbac-editor h3,
+.admin-permission-groups h4 {
+  margin: 0;
+}
+
+.admin-rbac-list span {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.admin-rbac-editor header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-rbac-editor header button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(71, 85, 105, 0.72);
+  border-radius: 8px;
+  color: #bfdbfe;
+  background: rgba(2, 6, 23, 0.28);
+  font-weight: 800;
+}
+
+.admin-rbac-editor p {
+  color: #93c5fd;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.admin-rbac-editor label {
+  display: grid;
+  gap: 7px;
+}
+
+.admin-rbac-editor label > span {
+  color: #cbd5e1;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.admin-rbac-editor input,
+.admin-rbac-editor textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(71, 85, 105, 0.9);
+  border-radius: 8px;
+  color: #f8fafc;
+  background: rgba(2, 6, 23, 0.28);
+}
+
+.admin-rbac-editor input {
+  min-height: 40px;
+  padding: 0 12px;
+}
+
+.admin-rbac-editor textarea {
+  min-height: 82px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.admin-permission-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-permission-groups section {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-permission-groups h4 {
+  color: #94a3b8;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.admin-permission-groups label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid rgba(71, 85, 105, 0.72);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.28);
+}
+
+.admin-permission-groups input {
+  width: 16px;
+  min-height: 16px;
+  padding: 0;
+  accent-color: #60a5fa;
+}
+
+.admin-permission-groups span,
+.admin-permission-groups strong,
+.admin-permission-groups small {
+  display: block;
+}
+
+.admin-permission-groups small {
+  color: #94a3b8;
+  font-size: 12px;
 }
 
 .admin-static-page {
@@ -3398,6 +3712,16 @@ th {
   color: #0f172a;
 }
 
+:root:not([data-theme="dark"]) .admin-users-type-filter span {
+  color: #64748b;
+}
+
+:root:not([data-theme="dark"]) .admin-users-type-filter select {
+  border-color: #cbd5e1;
+  color: #0f172a;
+  background: #f8fafc;
+}
+
 :root:not([data-theme="dark"]) .admin-users-row {
   border-color: #e2e8f0;
   color: #64748b;
@@ -3463,6 +3787,59 @@ th {
 
 :root:not([data-theme="dark"]) .admin-users-status-confirm p {
   color: #64748b;
+}
+
+:root:not([data-theme="dark"]) .admin-role-picker > span,
+:root:not([data-theme="dark"]) .admin-rbac-editor label > span {
+  color: #64748b;
+}
+
+:root:not([data-theme="dark"]) .admin-role-picker label,
+:root:not([data-theme="dark"]) .admin-rbac-list article,
+:root:not([data-theme="dark"]) .admin-permission-groups label {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+
+:root:not([data-theme="dark"]) .admin-role-picker small,
+:root:not([data-theme="dark"]) .admin-rbac-list span,
+:root:not([data-theme="dark"]) .admin-permission-groups h4,
+:root:not([data-theme="dark"]) .admin-permission-groups small {
+  color: #64748b;
+}
+
+:root:not([data-theme="dark"]) .admin-rbac-list,
+:root:not([data-theme="dark"]) .admin-rbac-editor {
+  border-color: #e2e8f0;
+  background: #ffffff;
+}
+
+:root:not([data-theme="dark"]) .admin-rbac-list article.is-selected {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+:root:not([data-theme="dark"]) .admin-rbac-list article > button:last-child {
+  color: #b42318;
+}
+
+:root:not([data-theme="dark"]) .admin-rbac-editor h3,
+:root:not([data-theme="dark"]) .admin-rbac-list strong,
+:root:not([data-theme="dark"]) .admin-permission-groups strong {
+  color: #0f172a;
+}
+
+:root:not([data-theme="dark"]) .admin-rbac-editor header button {
+  border-color: #cbd5e1;
+  color: #174ea6;
+  background: #ffffff;
+}
+
+:root:not([data-theme="dark"]) .admin-rbac-editor input,
+:root:not([data-theme="dark"]) .admin-rbac-editor textarea {
+  border-color: #cbd5e1;
+  color: #0f172a;
+  background: #f8fafc;
 }
 
 :root:not([data-theme="dark"]) .admin-static-hero,
@@ -3540,8 +3917,13 @@ th {
     grid-template-columns: 1fr;
   }
 
+  .admin-users-filters {
+    grid-template-columns: 1fr;
+  }
+
   .admin-static-metrics,
-  .admin-static-layout {
+  .admin-static-layout,
+  .admin-rbac-layout {
     grid-template-columns: 1fr;
   }
 
@@ -5460,6 +5842,24 @@ th {
 
 :root[data-theme="dark"] .history-item span {
   color: #e2e8f0;
+}
+
+:root[data-theme="dark"] .history-item__actions button,
+:root[data-theme="dark"] .history-item__rename button {
+  color: #cbd5e1;
+}
+
+:root[data-theme="dark"] .history-item__actions button:hover,
+:root[data-theme="dark"] .history-item__rename button:hover {
+  border-color: rgba(71, 85, 105, 0.9);
+  color: #bfdbfe;
+  background: rgba(15, 23, 42, 0.74);
+}
+
+:root[data-theme="dark"] .history-item__rename input {
+  border-color: rgba(96, 165, 250, 0.7);
+  color: #f8fafc;
+  background: rgba(2, 6, 23, 0.58);
 }
 
 :root[data-theme="dark"] .composer textarea,

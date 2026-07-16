@@ -9,10 +9,11 @@ from app.shared.graph.neo4j_client import get_neo4j_client
 from app.api.admin_auth import router as admin_auth_router
 from app.api.auth import router as auth_router
 from app.core.config import get_settings
+from app.core.rbac import ensure_default_role, ensure_permission_seed
 from app.core.redis import close_redis, connect_redis
 from app.core.security import hash_password
 from app.db import prisma
-from app.middleware import AuthEventLoggingMiddleware
+from app.middleware import AuthEventLoggingMiddleware, CookieJWTMiddleware
 from app.schemas import OrganizationResponse
 from app.services.query.routes import router as query_router
 
@@ -34,6 +35,11 @@ async def lifespan(app: FastAPI):
         existing = await prisma.organization.find_unique(where={"slug": org_data["slug"]})
         if not existing:
             await prisma.organization.create(data=org_data)
+
+    await ensure_permission_seed()
+    seeded_orgs = await prisma.organization.find_many()
+    for org in seeded_orgs:
+        await ensure_default_role(org.id)
 
     # Seed default admin under "intime"
     intime_org = await prisma.organization.find_unique(where={"slug": "intime"})
@@ -66,6 +72,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(AuthEventLoggingMiddleware)
+app.add_middleware(CookieJWTMiddleware)
 
 app.mount("/public", StaticFiles(directory="public"), name="public")
 app.include_router(auth_router)

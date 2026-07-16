@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     refresh_cookie_name: str = Field(
         default="taxai_refresh_token", alias="REFRESH_COOKIE_NAME"
     )
+    access_cookie_name: str = Field(
+        default="taxai_access_token", alias="ACCESS_COOKIE_NAME"
+    )
     cookie_secure: bool = Field(default=False, alias="COOKIE_SECURE")
     environment: str = Field(default="development", alias="ENVIRONMENT")
     pinecone_api_key: str = Field(default="", alias="PINECONE_API_KEY")
