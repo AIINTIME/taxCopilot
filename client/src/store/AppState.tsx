@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import { taxApi } from '../services/api/taxApi'
 import type { Attachment, AttachmentCategory, Conversation, Message, WorkflowId } from '../types'
 import { createId } from '../utils/id'
@@ -192,8 +192,17 @@ function reducer(state: AppState, action: AppAction): AppState {
 }
 
 export function AppStateProvider({ children }: { children: React.ReactNode }) {
-  const { accessToken } = useAuth()
   const [state, dispatch] = useReducer(reducer, undefined, loadState)
+  // The query endpoint is authenticated (get_current_user). AppStateProvider is
+  // nested inside AuthProvider in App.tsx, so the in-memory access token is
+  // reachable here and threaded into sendPrompt.
+  const { accessToken } = useAuth()
+
+  // The raw File behind each pending attachment, keyed by attachment id. The
+  // Attachment type is metadata only (name/size/status) and discards the bytes;
+  // the analyze-return endpoint needs the actual file, so keep it here rather
+  // than widening the shared type. Cleared when a message is sent.
+  const pendingFilesRef = useRef<Map<string, File>>(new Map())
 
   useEffect(() => {
     saveState(state)
@@ -249,7 +258,11 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       const uploaded = await Promise.all(
         files.map(async (file, index) => {
           try {
-            return { ...(await taxApi.uploadDocument(file)), category }
+            const attachment = { ...(await taxApi.uploadDocument(file)), category }
+            if (attachment.status === 'uploaded') {
+              pendingFilesRef.current.set(attachment.id, file)
+            }
+            return attachment
           } catch (error) {
             const message = error instanceof Error ? error.message : 'Upload failed'
             return { ...queued[index], status: 'error' as const, progress: 0, error: message }
@@ -298,6 +311,17 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         status: 'complete',
       }
 
+      // An attached file on the personal-tax workflow means "review this
+      // return", not "attach context to a question" -- route it to the
+      // analyze-return endpoint. Pick the first attachment whose bytes we still
+      // hold; other workflows keep the mock attachment behaviour.
+      const returnFile =
+        conversation.workflowId === 'personal-tax'
+          ? state.pendingAttachments
+              .map((a) => pendingFilesRef.current.get(a.id))
+              .find((f): f is File => f instanceof File)
+          : undefined
+
       dispatch({ type: 'add-message', conversationId: conversation.id, message: userMessage })
       dispatch({ type: 'set-attachments', attachments: [] })
       dispatch({ type: 'set-thinking', isThinking: true })
@@ -305,21 +329,24 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
       try {
         if (!accessToken) throw new Error('You need to log in again')
-        const response = await taxApi.sendPrompt(
-          {
-            conversationId: conversation.id,
-            workflowId: conversation.workflowId,
-            prompt: userMessage.content,
-            attachments: userMessage.attachments ?? [],
-          },
-          accessToken,
-        )
+        const response = returnFile
+          ? await taxApi.analyzeReturn(returnFile, accessToken)
+          : await taxApi.sendPrompt(
+              {
+                conversationId: conversation.id,
+                workflowId: conversation.workflowId,
+                prompt: userMessage.content,
+                attachments: userMessage.attachments ?? [],
+              },
+              accessToken,
+            )
         dispatch({ type: 'add-message', conversationId: conversation.id, message: response.message })
         dispatch({ type: 'set-follow-ups', followUps: response.followUps })
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Something went wrong'
         dispatch({ type: 'set-error', error: message })
       } finally {
+        pendingFilesRef.current.clear()
         dispatch({ type: 'set-thinking', isThinking: false })
       }
     },

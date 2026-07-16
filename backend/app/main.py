@@ -1,8 +1,17 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+
+# INFO-level so the [FLOW] debug logs in orchestration/graphs/query_graph.py
+# (which node fired, which external service was hit -- Pinecone/Neo4j/OpenAI/
+# Postgres/pure-computation -- and what it returned) print to the console.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 from app.api.admin import router as admin_router
 from app.shared.graph.neo4j_client import get_neo4j_client
@@ -15,6 +24,7 @@ from app.core.security import hash_password
 from app.db import prisma
 from app.middleware import AuthEventLoggingMiddleware, CookieJWTMiddleware
 from app.schemas import OrganizationResponse
+from app.services.analysis.routes import router as analysis_router
 from app.services.query.routes import router as query_router
 
 SEED_ORGS = [
@@ -79,6 +89,7 @@ app.include_router(auth_router)
 app.include_router(admin_auth_router, prefix="/admin/auth")
 app.include_router(admin_router, prefix="/admin")
 app.include_router(query_router)
+app.include_router(analysis_router)
 
 
 @app.get("/health")

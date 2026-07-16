@@ -1,44 +1,50 @@
-"""Pinecone-backed semantic similarity search over the statutory-kg namespace.
+"""Similarity search over the statutory knowledge namespace in Pinecone --
+the real, already-populated vector store (shared/vector/pinecone_client.py,
+"statutory-kg" namespace). An earlier version of this file queried a
+pgvector table (KnowledgeChunk) invented from a stale architecture-doc
+comment; that table was always empty and has been dropped (migration
+202607160002) -- Pinecone was the real store all along.
 
-The scaffold this replaces targeted pgvector, but the ingestion pipeline
-(app/services/ingestion/upsert/statutory_kg_upsert.py) writes real chunks to
-Pinecone's "statutory-kg" namespace -- this redirects retrieval to match.
+pinecone_client.py's query() is a synchronous SDK call; run via
+asyncio.to_thread so it doesn't block the event loop.
 """
+
+import asyncio
 
 from app.shared.embeddings.openai_embedding_provider import get_embedding_provider
 from app.shared.schemas.tax_year import TaxYearContext
 from app.shared.vector.pinecone_client import get_pinecone_client
 
-STATUTORY_KG_NAMESPACE = "statutory-kg"
+_NAMESPACE = "statutory-kg"
 
 
 async def similarity_search(
     query_embedding: list[float], as_of: TaxYearContext, top_k: int = 10
 ) -> list[dict]:
-    # NOT filtering by regime here, deliberately. The admin upload endpoint
-    # (app/api/admin.py) never passes a regime when ingesting -- every chunk
-    # defaults to ACT_1961 regardless of actual content. An exact-match
-    # filter against a tag that isn't meaningfully populated doesn't narrow
-    # results, it silently discards all of them: confirmed in practice that
-    # any query resolving to ACT_2025 (i.e. any query today, since the
-    # 1-Apr-2026 pivot has passed) returned zero matches against a
-    # 4,198-vector index. Re-enable this filter once ingestion actually
-    # tags regime per document; `as_of` is kept in the signature for that.
-    matches = get_pinecone_client().query(
-        namespace=STATUTORY_KG_NAMESPACE,
+    # Deliberately no server-side regime filter: the ingested corpus so far
+    # is tagged regime="1961" even for queries that resolve to the 2025-Act
+    # regime (e.g. today's date), and Pinecone's metadata filter would
+    # silently return nothing rather than degrade gracefully. Regime is
+    # still returned per-row so callers/ground_truth_gate can reason about
+    # it explicitly instead of it being invisibly filtered away.
+    results = await asyncio.to_thread(
+        get_pinecone_client().query,
+        namespace=_NAMESPACE,
         vector=query_embedding,
         top_k=top_k,
     )
     return [
         {
-            "chunk_id": m["id"],
-            "source_id": m["metadata"].get("source_id", ""),
-            "document_id": m["metadata"].get("document_id", ""),
-            "content": m["metadata"].get("text", ""),
-            "section_reference": None,
-            "score": m["score"],
+            "chunk_id": row["id"],
+            "source_id": row["metadata"].get("source_id", ""),
+            "document_id": row["metadata"].get("document_id", ""),
+            "content": row["metadata"].get("text", ""),
+            "section_reference": row["metadata"].get("section_reference"),
+            "score": row["score"],
+            "regime": row["metadata"].get("regime"),
+            "tier": row["metadata"].get("tier"),
         }
-        for m in matches
+        for row in results
     ]
 
 
