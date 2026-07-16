@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 class Citation(BaseModel):
     chunk_id: str
     source_id: str
+    document_id: str | None = None
+    document_name: str | None = None
     section_reference: str | None = None
     excerpt: str
     confidence: float = Field(ge=0.0, le=1.0)

@@ -5,6 +5,7 @@ work to the LangGraph query graph in orchestration/.
 """
 
 from datetime import date
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -20,10 +21,17 @@ class QueryRequest(BaseModel):
     query: str
     as_of_date: date | None = None
     session_id: str | None = None
+    # Structured financial figures for a computation-intent query (e.g. book
+    # profit, total income). No document-parsing pipeline extracts these
+    # automatically yet -- the caller must supply them. If a computation
+    # query arrives without the fields its rule needs, the response flags
+    # exactly what's missing rather than assuming/defaulting.
+    computation_inputs: dict[str, Any] | None = None
 
 
 class QueryResponse(BaseModel):
     answer: str
+    summary: str
     citations: list[Citation]
     computation_trace: dict | None = None
     gate_status: str

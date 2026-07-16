@@ -21,6 +21,7 @@ class QueryGraphState(TypedDict, total=False):
     user_id: str
     session_id: str | None
     explicit_as_of_date: date | None
+    computation_inputs: dict[str, Any] | None
     intent: Intent
     as_of: TaxYearContext
     computation_result: dict[str, Any] | None

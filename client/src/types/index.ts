@@ -14,6 +14,9 @@ export type WidgetType =
   | 'table'
   | 'legal-draft'
   | 'metric-grid'
+  | 'citations'
+
+export type GateStatus = 'VERIFIED' | 'FLAGGED' | 'PARTIAL'
 
 export type Attachment = {
   id: string
@@ -75,6 +78,16 @@ export type Metric = {
   trend?: string
 }
 
+export type Citation = {
+  chunk_id: string
+  source_id: string
+  document_name: string | null
+  section_reference: string | null
+  excerpt: string
+  confidence: number
+  verified: boolean
+}
+
 export type ResponseWidget =
   | { id: string; type: 'summary'; title: string; markdown: string }
   | { id: string; type: 'comparison'; title: string; cards: ComparisonCard[] }
@@ -83,6 +96,7 @@ export type ResponseWidget =
   | { id: string; type: 'table'; title: string; table: TableWidget }
   | { id: string; type: 'legal-draft'; title: string; draft: string }
   | { id: string; type: 'metric-grid'; title: string; metrics: Metric[] }
+  | { id: string; type: 'citations'; title: string; citations: Citation[] }
 
 export type Message = {
   id: string
@@ -92,6 +106,8 @@ export type Message = {
   attachments?: Attachment[]
   widgets?: ResponseWidget[]
   status?: 'thinking' | 'complete' | 'error'
+  gateStatus?: GateStatus
+  auditId?: string
 }
 
 export type Conversation = {
