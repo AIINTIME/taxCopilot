@@ -38,10 +38,17 @@ class QueryRequest(BaseModel):
     # deed) -- extracted fields are evidence-span verified against this text
     # before use (services/rag/extraction/document_extraction.py).
     uploaded_document_text: str | None = None
+    # Structured financial figures for a computation-intent query where no
+    # computation_request/document was supplied and the rule name is instead
+    # inferred from the query text. If a computation query arrives without
+    # the fields its rule needs, the response flags exactly what's missing
+    # rather than assuming/defaulting.
+    computation_inputs: dict[str, Any] | None = None
 
 
 class QueryResponse(BaseModel):
     answer: str
+    summary: str
     citations: list[Citation]
     computation_trace: dict | None = None
     ground_truth_check: dict | None = None

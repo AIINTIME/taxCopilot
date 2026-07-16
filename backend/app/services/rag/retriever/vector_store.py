@@ -11,6 +11,7 @@ asyncio.to_thread so it doesn't block the event loop.
 
 import asyncio
 
+from app.shared.embeddings.openai_embedding_provider import get_embedding_provider
 from app.shared.schemas.tax_year import TaxYearContext
 from app.shared.vector.pinecone_client import get_pinecone_client
 
@@ -36,6 +37,7 @@ async def similarity_search(
         {
             "chunk_id": row["id"],
             "source_id": row["metadata"].get("source_id", ""),
+            "document_id": row["metadata"].get("document_id", ""),
             "content": row["metadata"].get("text", ""),
             "section_reference": row["metadata"].get("section_reference"),
             "score": row["score"],
@@ -44,3 +46,8 @@ async def similarity_search(
         }
         for row in results
     ]
+
+
+async def embed_query(query: str) -> list[float]:
+    [vector] = await get_embedding_provider().embed([query])
+    return vector

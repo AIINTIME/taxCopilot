@@ -3,7 +3,7 @@ existing row -- every query produces exactly one new row.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from prisma import Json
 
@@ -18,6 +18,12 @@ async def write_audit_log(state: QueryGraphState) -> dict:
     llm_response = state.get("llm_response") or {}
     retrieved_chunks = state.get("retrieved_chunks", [])
     as_of_date = final_response["as_of_date"]
+    as_of_datetime = datetime.combine(as_of_date, datetime.min.time(), tzinfo=timezone.utc)
+
+    citations = final_response.get("citations", [])
+    citations_json = [
+        c.model_dump(mode="json") if hasattr(c, "model_dump") else c for c in citations
+    ]
 
     logger.info("[FLOW] audit_log: hitting Postgres (prisma.auditlog.create)")
     audit_log = await prisma.auditlog.create(
@@ -25,12 +31,12 @@ async def write_audit_log(state: QueryGraphState) -> dict:
             "userId": state.get("user_id"),
             "query": state["query"],
             "retrievedChunkIds": [chunk["chunk_id"] for chunk in retrieved_chunks],
-            "modelVersion": llm_response.get("model_version", ""),
-            "providerName": llm_response.get("provider_name", ""),
-            "response": final_response["answer"],
-            "citations": Json(final_response["citations"]),
-            "gateStatus": final_response["gate_status"],
-            "asOfDate": datetime.combine(as_of_date, datetime.min.time()),
+            "modelVersion": llm_response.get("model_version", "deterministic-computation-engine"),
+            "providerName": llm_response.get("provider_name", "internal"),
+            "response": final_response.get("answer", ""),
+            "citations": Json(citations_json),
+            "gateStatus": final_response.get("gate_status", "FLAGGED"),
+            "asOfDate": as_of_datetime,
         }
     )
     logger.info("[FLOW] audit_log: Postgres write confirmed, id=%s", audit_log.id)
@@ -40,11 +46,11 @@ async def write_audit_log(state: QueryGraphState) -> dict:
         "user_id": state.get("user_id"),
         "query": state["query"],
         "retrieved_chunk_ids": [chunk["chunk_id"] for chunk in retrieved_chunks],
-        "model_version": llm_response.get("model_version", ""),
-        "provider_name": llm_response.get("provider_name", ""),
-        "response": final_response["answer"],
-        "citations": final_response["citations"],
-        "gate_status": final_response["gate_status"],
+        "model_version": llm_response.get("model_version", "deterministic-computation-engine"),
+        "provider_name": llm_response.get("provider_name", "internal"),
+        "response": final_response.get("answer", ""),
+        "citations": citations_json,
+        "gate_status": final_response.get("gate_status", "FLAGGED"),
         "as_of_date": as_of_date,
         "created_at": audit_log.createdAt,
     }

@@ -22,46 +22,64 @@ from app.shared.schemas.tax_year import (
     TaxYearContext,
 )
 
-# Deterministic, keyword/pattern based -- never an LLM call, per the
-# architecture's "temporal resolution must run first, control flow is never
-# an LLM decision" rule.
-_AY_PATTERN = re.compile(r"\bAY\s*(\d{4})-(\d{2})\b|\bassessment\s+year\s*(\d{4})-(\d{2})\b", re.IGNORECASE)
-_FY_PATTERN = re.compile(r"\bFY\s*(\d{4})-(\d{2})\b|\bfinancial\s+year\s*(\d{4})-(\d{2})\b", re.IGNORECASE)
+# "AY 2025-26" / "AY 2025-2026" / "assessment year 2025-26"
+_AY_PATTERN = re.compile(
+    r"\b(?:AY|assessment year)\s*(\d{4})\s*-\s*(\d{2,4})\b", re.IGNORECASE
+)
+# "FY 2024-25" / "financial year 2024-25"
+_FY_PATTERN = re.compile(
+    r"\b(?:FY|financial year)\s*(\d{4})\s*-\s*(\d{2,4})\b", re.IGNORECASE
+)
+# ISO or common date formats, e.g. 2025-07-15, 15/07/2025, 15-07-2025
+_DATE_PATTERN = re.compile(
+    r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b|\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b"
+)
 
 
-def _fy_start_year_from_query(query: str) -> int | None:
+def _assessment_year_for(as_of_date: date) -> AssessmentYear:
+    """India's FY runs 1 Apr - 31 Mar; AY is the year immediately following FY."""
+    if as_of_date.month >= 4:
+        fy_start_year = as_of_date.year
+    else:
+        fy_start_year = as_of_date.year - 1
+
+    financial_year = f"{fy_start_year}-{str(fy_start_year + 1)[-2:]}"
+    ay = f"{fy_start_year + 1}-{str(fy_start_year + 2)[-2:]}"
+    return AssessmentYear(ay=ay, financial_year=financial_year)
+
+
+def _parse_date_from_query(query: str) -> date | None:
     ay_match = _AY_PATTERN.search(query)
     if ay_match:
-        ay_start = int(ay_match.group(1) or ay_match.group(3))
-        return ay_start - 1  # AY 2025-26 -> FY 2024-25
+        fy_start_year = int(ay_match.group(1)) - 1
+        return date(fy_start_year, 4, 1)
 
     fy_match = _FY_PATTERN.search(query)
     if fy_match:
-        return int(fy_match.group(1) or fy_match.group(3))
+        return date(int(fy_match.group(1)), 4, 1)
+
+    date_match = _DATE_PATTERN.search(query)
+    if date_match:
+        if date_match.group(1):
+            year, month, day = date_match.group(1), date_match.group(2), date_match.group(3)
+        else:
+            day, month, year = date_match.group(4), date_match.group(5), date_match.group(6)
+        try:
+            return date(int(year), int(month), int(day))
+        except ValueError:
+            return None
 
     return None
 
 
-def _financial_year_bounds(as_of_date: date) -> int:
-    """Return the FY start year (e.g. 2024 for FY "2024-25") for `as_of_date`."""
-    return as_of_date.year if as_of_date.month >= 4 else as_of_date.year - 1
-
-
 def resolve_as_of(query: str, explicit_date: date | None = None) -> TaxYearContext:
-    if explicit_date is not None:
-        as_of_date = explicit_date
-    else:
-        fy_start_year = _fy_start_year_from_query(query)
-        # Anchor to the last day of the mentioned FY (31 Mar of the following
-        # calendar year) so regime/rate-change branching reflects that year.
-        as_of_date = date(fy_start_year + 1, 3, 31) if fy_start_year is not None else date.today()
+    as_of_date = explicit_date or _parse_date_from_query(query) or date.today()
 
-    fy_start_year = _financial_year_bounds(as_of_date)
-    financial_year = f"{fy_start_year}-{str(fy_start_year + 1)[-2:]}"
-    ay_start_year = fy_start_year + 1
-    ay = f"{ay_start_year}-{str(ay_start_year + 1)[-2:]}"
-
-    regime = TaxActRegime.ACT_2025 if as_of_date >= ACT_2025_EFFECTIVE_DATE else TaxActRegime.ACT_1961
+    regime = (
+        TaxActRegime.ACT_2025
+        if as_of_date >= ACT_2025_EFFECTIVE_DATE
+        else TaxActRegime.ACT_1961
+    )
     capital_gains_period = (
         CapitalGainsPeriod.POST_RATE_CHANGE
         if as_of_date >= CG_RATE_CHANGE_DATE
@@ -70,7 +88,7 @@ def resolve_as_of(query: str, explicit_date: date | None = None) -> TaxYearConte
 
     return TaxYearContext(
         as_of_date=as_of_date,
-        assessment_year=AssessmentYear(ay=ay, financial_year=financial_year),
+        assessment_year=_assessment_year_for(as_of_date),
         regime=regime,
         capital_gains_period=capital_gains_period,
     )

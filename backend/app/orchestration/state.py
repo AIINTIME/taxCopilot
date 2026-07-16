@@ -30,6 +30,10 @@ class QueryGraphState(TypedDict, total=False):
     # Raw text of a document the user uploaded with this query (e.g. a sale
     # deed), if any.
     uploaded_document_text: str | None
+    # Structured financial figures for a computation-intent query where no
+    # computation_request/document was supplied -- paired with the rule name
+    # inferred from the query text (see _infer_rule_name in query_graph.py).
+    computation_inputs: dict[str, Any] | None
     intent: Intent
     as_of: TaxYearContext
     # LLM-extracted, evidence-span-verified fields from uploaded_document_text

@@ -1613,6 +1613,37 @@ a:focus-visible {
   background: #fff1f2;
 }
 
+.citation-list {
+  display: grid;
+  gap: 8px;
+}
+
+.citation-list article {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #dcfce7;
+  color: #14532d;
+  background: #f0fdf4;
+}
+
+.citation-list article.is-unverified {
+  border-color: #fed7aa;
+  color: #9a3412;
+  background: #fff7ed;
+}
+
+.citation-list strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.citation-list p {
+  font-size: 13px;
+}
+
 .table-wrap {
   overflow: auto;
 }

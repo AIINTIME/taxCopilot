@@ -2,20 +2,8 @@
 citations into the final response object returned to the API layer.
 """
 
-import re
-
 from app.orchestration.state import QueryGraphState
-
-# The narration prompt (services/rag/prompts/narration_prompts.py) asks the
-# LLM to append a machine-readable "CITATIONS: [...]" block after its answer
-# -- that block is for _evidence_gate_node to parse, not for the end user to
-# see, so it's stripped from the displayed answer here rather than left
-# leaking into the response text.
-_CITATIONS_BLOCK_PATTERN = re.compile(r"\s*CITATIONS:\s*\[.*\]\s*$", re.DOTALL)
-
-
-def _strip_citations_block(text: str) -> str:
-    return _CITATIONS_BLOCK_PATTERN.sub("", text).strip()
+from app.services.rag.text_summary import extractive_summary
 
 
 def _gate_status_for_computation(ground_truth_check: dict | None) -> str:
@@ -31,24 +19,47 @@ def _gate_status_for_computation(ground_truth_check: dict | None) -> str:
 
 
 async def assemble_response(state: QueryGraphState) -> dict:
+    as_of_date = state["as_of"].as_of_date
     computation_result = state.get("computation_result")
-    llm_response = state.get("llm_response")
-    ground_truth_check = state.get("ground_truth_check")
 
     if computation_result is not None:
-        outputs = computation_result.get("outputs", {})
-        answer = "; ".join(f"{key}: {value}" for key, value in outputs.items())
-        gate_status = _gate_status_for_computation(ground_truth_check)
+        if computation_result.get("status") == "missing_data":
+            missing = ", ".join(computation_result.get("missing_fields", []))
+            final_response = {
+                "answer": (
+                    f"This computation requires figures that weren't provided: {missing}. "
+                    "Please supply these values — no assumption or default has been used "
+                    "for a missing figure."
+                ),
+                "citations": [],
+                "computation_trace": None,
+                "ground_truth_check": None,
+                "gate_status": "FLAGGED",
+                "as_of_date": as_of_date,
+            }
+        else:
+            trace = computation_result["trace"]
+            ground_truth_check = state.get("ground_truth_check")
+            outputs = trace.get("outputs", {})
+            answer = "; ".join(f"{key}: {value}" for key, value in outputs.items())
+            final_response = {
+                "answer": answer,
+                "citations": [],
+                "computation_trace": trace,
+                "ground_truth_check": ground_truth_check,
+                "gate_status": _gate_status_for_computation(ground_truth_check),
+                "as_of_date": as_of_date,
+            }
     else:
-        answer = _strip_citations_block((llm_response or {}).get("text", ""))
-        gate_status = state.get("gate_status", "VERIFIED")
+        llm_response = state.get("llm_response") or {}
+        final_response = {
+            "answer": llm_response.get("text", ""),
+            "citations": state.get("gated_citations", []),
+            "computation_trace": None,
+            "ground_truth_check": None,
+            "gate_status": state.get("gate_status", "FLAGGED"),
+            "as_of_date": as_of_date,
+        }
 
-    final_response = {
-        "answer": answer,
-        "citations": state.get("gated_citations", []),
-        "computation_trace": computation_result,
-        "ground_truth_check": ground_truth_check,
-        "gate_status": gate_status,
-        "as_of_date": state["as_of"].as_of_date,
-    }
+    final_response["summary"] = extractive_summary(final_response["answer"])
     return {"final_response": final_response}
