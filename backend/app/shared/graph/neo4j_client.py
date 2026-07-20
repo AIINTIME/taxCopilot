@@ -30,6 +30,7 @@ import certifi
 from neo4j import AsyncDriver, AsyncGraphDatabase
 
 from app.core.config import get_settings
+from app.core.request_timing import record_span
 
 
 # A `+s` URI tells the driver to configure TLS itself, and it then REJECTS an
@@ -80,7 +81,7 @@ class Neo4jClient:
             result = await tx.run(query, **params)
             return await result.data()
 
-        async with self._driver.session() as session:
+        async with record_span("neo4j"), self._driver.session() as session:
             return await session.execute_read(_read)
 
     async def close(self) -> None:

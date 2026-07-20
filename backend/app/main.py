@@ -13,6 +13,13 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
+# RequestTimingMiddleware logs one line per request carrying method, path,
+# status AND where the time went, which is a superset of uvicorn's access line
+# -- leaving both on prints every request twice. Uvicorn's loggers set
+# propagate=False and own their handlers, so disabling this logger is the
+# lever that works; a root-level change would not touch it.
+logging.getLogger("uvicorn.access").disabled = True
+
 from app.api.admin import router as admin_router
 from app.shared.graph.neo4j_client import get_neo4j_client
 from app.api.admin_auth import router as admin_auth_router
@@ -21,7 +28,7 @@ from app.core.config import get_settings
 from app.core.redis import close_redis, connect_redis
 from app.core.security import hash_password
 from app.db import prisma
-from app.middleware import AuthEventLoggingMiddleware
+from app.middleware import AuthEventLoggingMiddleware, RequestTimingMiddleware
 from app.schemas import OrganizationResponse
 from app.services.analysis.routes import router as analysis_router
 from app.services.query.routes import router as query_router
@@ -76,6 +83,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(AuthEventLoggingMiddleware)
+# Registered last => outermost (Starlette applies middleware in reverse order),
+# so the measured total covers the whole stack including the middleware above.
+app.add_middleware(RequestTimingMiddleware)
 
 app.mount("/public", StaticFiles(directory="public"), name="public")
 app.include_router(auth_router)

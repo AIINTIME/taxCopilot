@@ -17,6 +17,7 @@ import time
 
 from openai import AsyncOpenAI
 
+from app.core.request_timing import record_elapsed
 from app.shared.llm.base import LLMMessage, LLMProvider, LLMResponse
 from app.shared.llm.config import get_llm_settings
 
@@ -51,9 +52,13 @@ class FallbackProvider(LLMProvider):
             messages=[{"role": "system", "content": system_prompt}]
             + [{"role": m.role, "content": m.content} for m in messages],
         )
+        latency_ms = (time.monotonic() - start) * 1000
+        # Named distinctly from the primary: a request that fell back is worth
+        # seeing in the log rather than reading as an ordinary slow chat call.
+        record_elapsed("openai-chat-fallback", latency_ms)
         return LLMResponse(
             text=response.choices[0].message.content or "",
             model_version=response.model,
             provider_name="groq",
-            latency_ms=(time.monotonic() - start) * 1000,
+            latency_ms=latency_ms,
         )

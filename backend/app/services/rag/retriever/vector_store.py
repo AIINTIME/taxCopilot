@@ -11,6 +11,7 @@ asyncio.to_thread so it doesn't block the event loop.
 
 import asyncio
 
+from app.core.request_timing import record_span
 from app.shared.embeddings.openai_embedding_provider import get_embedding_provider
 from app.shared.schemas.tax_year import TaxYearContext
 from app.shared.vector.pinecone_client import get_pinecone_client
@@ -27,12 +28,13 @@ async def similarity_search(
     # silently return nothing rather than degrade gracefully. Regime is
     # still returned per-row so callers/ground_truth_gate can reason about
     # it explicitly instead of it being invisibly filtered away.
-    results = await asyncio.to_thread(
-        get_pinecone_client().query,
-        namespace=_NAMESPACE,
-        vector=query_embedding,
-        top_k=top_k,
-    )
+    async with record_span("pinecone"):
+        results = await asyncio.to_thread(
+            get_pinecone_client().query,
+            namespace=_NAMESPACE,
+            vector=query_embedding,
+            top_k=top_k,
+        )
     return [
         {
             "chunk_id": row["id"],

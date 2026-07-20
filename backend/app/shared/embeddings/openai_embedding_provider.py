@@ -8,6 +8,7 @@ No file outside shared/ may import openai directly.
 
 from openai import AsyncOpenAI
 
+from app.core.request_timing import record_span
 from app.shared.llm.config import get_llm_settings
 
 
@@ -19,11 +20,12 @@ class OpenAIEmbeddingProvider:
         self._dimensions = settings.embedding_dimensions
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        response = await self._client.embeddings.create(
-            model=self._model,
-            input=texts,
-            dimensions=self._dimensions,
-        )
+        async with record_span("openai-embed"):
+            response = await self._client.embeddings.create(
+                model=self._model,
+                input=texts,
+                dimensions=self._dimensions,
+            )
         return [item.embedding for item in response.data]
 
 
