@@ -302,13 +302,12 @@ async def _computation_node(state: QueryGraphState) -> dict:
             rule_name, inputs,
         )
     else:
-        # classify_intent's LLM call always ran and succeeded by the time this
-        # node is reached -- a failure there raises QueryUnderstandingError and
-        # aborts the graph before _computation_node ever executes (see
-        # _classify_intent_node). So state["rule_name"] is always present here;
-        # None is a legitimate value meaning the LLM could not confidently
-        # identify a computation rule for this query.
-        rule_name = state["rule_name"]
+        # Via _known_rule_name, not state["rule_name"] directly: the LLM
+        # understanding step normally populates it, but the key is absent when
+        # the graph is entered without that step (and the resolver then falls
+        # back to _infer_rule_name's patterns). None remains a legitimate
+        # result -- no rule could be identified for this query at all.
+        rule_name = _known_rule_name(state)
         if rule_name is None:
             logger.info(
                 "[FLOW] computation: no rule_name inferred from query -- falling back to retrieval"
