@@ -27,6 +27,27 @@ export type AdminUserItem = {
   organization_id: string | null
   admin_id: string | null
   is_active: boolean
+  role_ids: string[]
+  roles: string[]
+  permissions: string[]
+  created_at: string
+}
+
+export type PermissionItem = {
+  id: string
+  key: string
+  label: string
+  description: string | null
+  category: string
+}
+
+export type RoleItem = {
+  id: string
+  name: string
+  description: string | null
+  is_system: boolean
+  permission_keys: string[]
+  user_count: number
   created_at: string
 }
 
@@ -106,7 +127,7 @@ export const adminApi = {
   },
   createUser(
     accessToken: string,
-    payload: { name: string; email: string; password: string },
+    payload: { name: string; email: string; password: string; role_ids: string[] },
   ) {
     return request<AdminUserItem>('/admin/users', {
       method: 'POST',
@@ -137,6 +158,50 @@ export const adminApi = {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${accessToken}` },
       body: JSON.stringify({ is_active: isActive }),
+    })
+  },
+  assignUserRoles(accessToken: string, userId: string, roleIds: string[]) {
+    return request<AdminUserItem>(`/admin/users/${userId}/roles`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ role_ids: roleIds }),
+    })
+  },
+  getPermissions(accessToken: string) {
+    return request<PermissionItem[]>('/admin/permissions', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+  },
+  getRoles(accessToken: string) {
+    return request<RoleItem[]>('/admin/roles', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+  },
+  createRole(
+    accessToken: string,
+    payload: { name: string; description: string | null; permission_keys: string[] },
+  ) {
+    return request<RoleItem>('/admin/roles', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(payload),
+    })
+  },
+  updateRole(
+    accessToken: string,
+    roleId: string,
+    payload: { name?: string; description?: string | null; permission_keys?: string[] },
+  ) {
+    return request<RoleItem>(`/admin/roles/${roleId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(payload),
+    })
+  },
+  deleteRole(accessToken: string, roleId: string) {
+    return request<void>(`/admin/roles/${roleId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
     })
   },
   getAuditLogs(accessToken: string) {

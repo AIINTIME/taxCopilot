@@ -10,9 +10,29 @@ type ChatComposerProps = {
   workflow: Workflow
 }
 
+// Matches the backend's supported set (services/query/routes.py's
+// _extract_document_text) -- PDF/DOCX text extraction is proven there;
+// nothing does OCR on images/scanned documents anywhere in this codebase.
+const ACCEPTED_DOCUMENT_EXTENSIONS = ['.pdf', '.docx', '.txt', '.csv']
+
+function splitByAcceptedType(files: File[]): { accepted: File[]; rejected: File[] } {
+  const accepted: File[] = []
+  const rejected: File[] = []
+  for (const file of files) {
+    const lowerName = file.name.toLowerCase()
+    if (ACCEPTED_DOCUMENT_EXTENSIONS.some((ext) => lowerName.endsWith(ext))) {
+      accepted.push(file)
+    } else {
+      rejected.push(file)
+    }
+  }
+  return { accepted, rejected }
+}
+
 export function ChatComposer({ workflow }: ChatComposerProps) {
   const [value, setValue] = useState('')
   const [isEnhancing, setIsEnhancing] = useState(false)
+  const [fileTypeError, setFileTypeError] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const { pendingAttachments, isThinking, uploadFiles, removeAttachment, sendPrompt } = useAppState()
@@ -21,8 +41,16 @@ export function ChatComposer({ workflow }: ChatComposerProps) {
 
   function readFiles(fileList: FileList | null) {
     const files = Array.from(fileList ?? [])
-    if (files.length > 0) {
-      void uploadFiles(files)
+    const { accepted, rejected } = splitByAcceptedType(files)
+
+    setFileTypeError(
+      rejected.length > 0
+        ? `${rejected.map((f) => f.name).join(', ')} — unsupported file type. Attach a PDF, DOCX, TXT, or CSV file.`
+        : null,
+    )
+
+    if (accepted.length > 0) {
+      void uploadFiles(accepted)
     }
   }
 
@@ -80,6 +108,8 @@ export function ChatComposer({ workflow }: ChatComposerProps) {
         </div>
       ) : null}
 
+      {fileTypeError ? <p className="composer__file-error">{fileTypeError}</p> : null}
+
       <form
         className="composer"
         onSubmit={(event) => {
@@ -87,7 +117,14 @@ export function ChatComposer({ workflow }: ChatComposerProps) {
           void submit()
         }}
       >
-        <input ref={fileInputRef} type="file" multiple hidden onChange={handleFileChange} />
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          accept={ACCEPTED_DOCUMENT_EXTENSIONS.join(',')}
+          onChange={handleFileChange}
+        />
         <button type="button" className="composer__icon" aria-label="Attach files" onClick={() => fileInputRef.current?.click()}>
           <Paperclip size={20} />
         </button>

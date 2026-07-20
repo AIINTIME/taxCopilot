@@ -2,15 +2,23 @@
 
     intent classify -> temporal resolve
         -> [no source could answer this?] -> scoped_decline -> assemble_response
-        -> [uploaded document?] -> document_extraction -> computation
+        -> [document attached + rule known (explicit request, or inferred
+            from the query text)] -> document_extraction -> computation
         -> [computation_request given] -> computation
         -> [figure lookup, no income stated] -> rate_lookup -> assemble_response
         -> [free-text query, rule inferred] -> computation
-        -> [pure text query / rule not inferred] -> retrieval -> narrate -> evidence_gate
+        -> [retrieval-intent, or no rule known] -> retrieval -> narrate -> evidence_gate
     computation -> [computed] -> ground_truth_check -> computation_citations -> assemble_response -> audit_log
     computation -> [rule not inferred at all] -> computation_fallback -> retrieval
     computation -> [rule known but fields missing] -> assemble_response -> audit_log
     evidence_gate -> assemble_response -> audit_log
+
+A document attached to a retrieval-intent query (or one with no computation
+rule identified, e.g. Notices) is not discarded -- retrieval prepends it as
+an extra citable context chunk ahead of narration, so general/explanatory
+questions about an attached document are answered grounded in it, through
+the same evidence-gate verification already used for the statutory
+knowledge base (see _uploaded_document_chunk).
 
 Node functions here are thin wrappers that call straight into services/* --
 this file contains no business logic itself, only graph wiring and state
@@ -30,12 +38,13 @@ from app.orchestration.nodes.computation_citations import resolve_computation_ci
 from app.orchestration.state import QueryGraphState
 from app.services.computation.computation_trace import ComputationTrace
 from app.services.computation.engine import MissingComputationInputError, compute
-from app.services.query.input_extractor import (
-    clarification_questions,
-    extract_inputs,
-    states_income,
+from app.services.query.input_extractor import clarification_questions, states_income
+from app.services.query.intent_classifier_types import Intent
+from app.services.query.llm_query_understanding import (
+    QueryUnderstandingError,
+    classify_and_extract,
+    extract_personal_regime_fields_from_document,
 )
-from app.services.query.intent_classifier import Intent, classify_intent
 from app.services.query.rate_lookup import (
     build_deduction_card,
     build_rate_card,
@@ -52,7 +61,7 @@ from app.services.rag.evidence_gate import (
     verify_citations,
 )
 from app.services.rag.extraction.document_extraction import (
-    extract_capital_gains_inputs,
+    extract_fields_for_rule,
     verified_fields_to_computation_inputs,
 )
 from app.services.rag.ground_truth_gate import (
@@ -67,7 +76,6 @@ from app.shared.llm.base import LLMMessage
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DOCUMENT_RULE_NAME = "capital_gains"
 
 _RULE_NAME_PATTERNS: dict[str, re.Pattern[str]] = {
     "mat": re.compile(r"\b(mat\b|minimum alternate tax|115jb)\b", re.IGNORECASE),
@@ -121,10 +129,61 @@ def _infer_rule_name(query: str) -> str | None:
     return None
 
 
+def _known_rule_name(state: QueryGraphState) -> str | None:
+    """The rule to act on, using the same precedence _computation_node
+    already applies: an explicit computation_request wins, otherwise whatever
+    the LLM understanding step inferred from the query text.
+
+    When the LLM names no rule, fall back to _infer_rule_name's patterns rather
+    than giving up. The LLM is the better classifier and rightly goes first,
+    but the fallback still carries the _CORPORATE_CUE guard documented above --
+    dropping it silently reopens the Section 80D corporate-misroute, which
+    fails as a confidently wrong answer rather than as an error.
+
+    Still may return None, which is a legitimate answer: it routes to a real
+    RAG search instead of dead-ending on a guessed rule's missing inputs.
+    """
+    computation_request = state.get("computation_request")
+    if computation_request is not None:
+        return computation_request["rule_name"]
+
+    rule_name = state.get("rule_name")
+    if rule_name is not None:
+        return rule_name
+    return _infer_rule_name(state["query"])
+
+
 async def _classify_intent_node(state: QueryGraphState) -> dict:
-    intent = await classify_intent(state["query"])
-    logger.info("[FLOW] classify_intent: query=%r -> intent=%s", state["query"], intent.value)
-    return {"intent": intent}
+    # The LLM is the sole classifier: one call decides intent, identifies the
+    # computation rule (if any), and -- for personal_regime_comparison --
+    # extracts evidence-verified, re-parsed field values (see
+    # llm_query_understanding.py for why extracted numbers are never taken on
+    # the LLM's own word even though routing is). There is no deterministic
+    # fallback here by design -- a failure is re-raised as
+    # QueryUnderstandingError and propagates out of run_query_graph; the API
+    # layer (services/query/routes.py) turns that into a clear, retry-able
+    # error rather than silently degrading to a weaker classifier.
+    try:
+        understanding = await classify_and_extract(state["query"])
+    except Exception as exc:
+        logger.exception("[FLOW] classify_intent: LLM query understanding FAILED")
+        raise QueryUnderstandingError(
+            "Could not understand the query -- the classification LLM call failed"
+        ) from exc
+
+    logger.info(
+        "[FLOW] classify_intent: query=%r -> intent=%s rule_name=%s",
+        state["query"], understanding.intent.value, understanding.rule_name,
+    )
+    result: dict[str, Any] = {
+        "intent": understanding.intent,
+        "rule_name": understanding.rule_name,
+    }
+    if understanding.extracted is not None:
+        result["parsed_query_inputs"] = understanding.extracted.to_rule_inputs()
+        result["parsed_query_missing_fields"] = list(understanding.extracted.missing)
+        result["assumptions"] = list(understanding.extracted.assumptions)
+    return result
 
 
 async def _resolve_temporal_node(state: QueryGraphState) -> dict:
@@ -181,9 +240,31 @@ async def _rate_lookup_node(state: QueryGraphState) -> dict:
 
 
 async def _document_extraction_node(state: QueryGraphState) -> dict:
-    logger.info("[FLOW] document_extraction: calling OpenAI LLM to extract fields from uploaded document")
-    extracted = await extract_capital_gains_inputs(state["uploaded_document_text"])
-    inputs, missing = verified_fields_to_computation_inputs(extracted)
+    # _route_after_temporal only sends a query here once a rule is already
+    # known (explicit computation_request, or classify_intent inferred one
+    # from the query text) -- see _known_rule_name for the shared precedence.
+    rule_name = _known_rule_name(state)
+    document_text = state["uploaded_document_text"]
+
+    logger.info(
+        "[FLOW] document_extraction: rule_name=%s -- calling OpenAI LLM to "
+        "extract fields from uploaded document", rule_name,
+    )
+
+    if rule_name == "personal_regime_comparison":
+        # Reuses the same evidence-span + re-derived-amount extraction
+        # llm_query_understanding.py's classify_and_extract already uses for
+        # the query-text path, pointed at the document instead -- one
+        # number-provenance guarantee, not two.
+        extracted_inputs = await extract_personal_regime_fields_from_document(document_text)
+        inputs = extracted_inputs.to_rule_inputs()
+        missing = list(extracted_inputs.missing)
+        assumptions = list(state.get("assumptions") or []) + list(extracted_inputs.assumptions)
+    else:
+        extracted = await extract_fields_for_rule(rule_name, document_text)
+        inputs, missing = verified_fields_to_computation_inputs(rule_name, extracted)
+        assumptions = list(state.get("assumptions") or [])
+
     logger.info(
         "[FLOW] document_extraction: verified_fields=%s missing_fields=%s",
         list(inputs), missing,
@@ -192,18 +273,26 @@ async def _document_extraction_node(state: QueryGraphState) -> dict:
     result: dict[str, Any] = {
         "extracted_inputs": inputs,
         "extraction_missing_fields": missing,
+        "assumptions": assumptions,
     }
     # Only auto-build a computation_request when every required field was
     # verified, and only if the caller didn't already supply one explicitly.
     if not missing and state.get("computation_request") is None:
         result["computation_request"] = {
-            "rule_name": _DEFAULT_DOCUMENT_RULE_NAME,
+            "rule_name": rule_name,
             "inputs": inputs,
         }
     return result
 
 
 async def _computation_node(state: QueryGraphState) -> dict:
+    # Bound here, not just in the personal_regime_comparison branch below --
+    # a computation_request built by _document_extraction_node for
+    # personal_regime_comparison reaches the `if computation_request is not
+    # None` branch, which never touched this variable before, and the
+    # `if rule_name == "personal_regime_comparison": result["assumptions"]`
+    # line further down needs it regardless of which branch ran.
+    assumptions = list(state.get("assumptions") or [])
     computation_request = state.get("computation_request")
     if computation_request is not None:
         rule_name = computation_request["rule_name"]
@@ -213,7 +302,13 @@ async def _computation_node(state: QueryGraphState) -> dict:
             rule_name, inputs,
         )
     else:
-        rule_name = _infer_rule_name(state["query"])
+        # classify_intent's LLM call always ran and succeeded by the time this
+        # node is reached -- a failure there raises QueryUnderstandingError and
+        # aborts the graph before _computation_node ever executes (see
+        # _classify_intent_node). So state["rule_name"] is always present here;
+        # None is a legitimate value meaning the LLM could not confidently
+        # identify a computation rule for this query.
+        rule_name = state["rule_name"]
         if rule_name is None:
             logger.info(
                 "[FLOW] computation: no rule_name inferred from query -- falling back to retrieval"
@@ -231,30 +326,32 @@ async def _computation_node(state: QueryGraphState) -> dict:
         if rule_name == "personal_regime_comparison":
             # Unlike the other inferred rules (which expect the caller to
             # supply `computation_inputs` directly), personal-tax queries are
-            # parsed straight out of the query text -- there is no form/UI
-            # asking for gross_income/deductions the way an explicit
-            # computation_request would. See services/query/input_extractor.py.
-            extracted = extract_inputs(state["query"])
+            # parsed straight out of the query text by classify_intent's LLM
+            # call -- there is no form/UI asking for gross_income/deductions
+            # the way an explicit computation_request would. See
+            # llm_query_understanding.py for the evidence-span verification
+            # and re-parsing that makes these numbers trustworthy.
+            inputs = state.get("parsed_query_inputs") or {}
+            missing = state.get("parsed_query_missing_fields") or []
             logger.info(
-                "[FLOW] computation: personal_regime_comparison parsed inputs=%s "
-                "missing=%s assumptions=%s",
-                extracted.values, extracted.missing, extracted.assumptions,
+                "[FLOW] computation: personal_regime_comparison using LLM-parsed "
+                "inputs=%s missing=%s",
+                inputs, missing,
             )
-            if extracted.needs_clarification:
-                questions = clarification_questions(extracted)
+
+            if missing:
+                questions = clarification_questions(missing)
                 return {
                     "computation_result": {
                         "status": "missing_data",
                         "rule_name": rule_name,
-                        "missing_fields": list(extracted.missing),
+                        "missing_fields": missing,
                         "clarification": "\n".join(
                             ["I need one more detail before I can compute this:", *questions]
                         ),
                     },
-                    "assumptions": list(extracted.assumptions),
+                    "assumptions": assumptions,
                 }
-            inputs = extracted.to_rule_inputs()
-            assumptions = list(extracted.assumptions)
         else:
             inputs = state.get("computation_inputs") or {}
             assumptions = []
@@ -298,6 +395,24 @@ async def _computation_node(state: QueryGraphState) -> dict:
                 "status": "missing_data",
                 "rule_name": rule_name,
                 "missing_fields": exc.missing_fields,
+            }
+        }
+    except ValueError as exc:
+        # A rule function's own domain-specific rejection (e.g.
+        # capital_gains.compute_capital_gains raising when CII indexation
+        # figures are needed but not among CapitalGainsInput's declared
+        # fields, so document extraction/computation_inputs can never
+        # supply them) -- an honest "here's what's missing and why", never
+        # an unhandled 500, same as MissingComputationInputError above.
+        logger.warning(
+            "[FLOW] computation: rule_name=%s rejected its inputs: %s", rule_name, exc,
+        )
+        return {
+            "computation_result": {
+                "status": "missing_data",
+                "rule_name": rule_name,
+                "missing_fields": [],
+                "clarification": str(exc),
             }
         }
 
@@ -349,11 +464,42 @@ async def _ground_truth_check_node(state: QueryGraphState) -> dict:
     }
 
 
+# Keeps the synthetic chunk's content bounded so one large attachment can't
+# blow the narration prompt's context budget. No internal chunking/semantic
+# search over the user's own document in this pass -- the whole (capped)
+# text becomes a single citable context block, which is fine for a typical
+# single-document attachment.
+_MAX_UPLOADED_DOCUMENT_CHARS = 6000
+
+
+def _uploaded_document_chunk(document_text: str) -> dict:
+    """A synthetic RetrievedChunk-shaped dict for the user's own uploaded
+    document, so it flows through the exact same numbered [N] citation and
+    evidence-gate verification machinery already used for statutory KG
+    chunks -- clearly labeled (section_reference) as distinct from the
+    statutory knowledge base rather than conflated with it."""
+    return {
+        "chunk_id": "uploaded-document",
+        "source_id": "uploaded-document",
+        "document_id": None,
+        "content": document_text[:_MAX_UPLOADED_DOCUMENT_CHARS],
+        "section_reference": "Your uploaded document",
+        "score": 1.0,
+    }
+
+
 async def _retrieval_node(state: QueryGraphState) -> dict:
     logger.info("[FLOW] retrieval: hitting Pinecone/Neo4j (hybrid_search)")
     chunks = await hybrid_search(state["query"], state["as_of"])
     logger.info("[FLOW] retrieval: hybrid_search returned %d chunk(s)", len(chunks))
-    return {"retrieved_chunks": [c.model_dump() for c in chunks]}
+
+    chunk_dicts = [c.model_dump() for c in chunks]
+    uploaded_text = state.get("uploaded_document_text")
+    if uploaded_text:
+        logger.info("[FLOW] retrieval: prepending uploaded document as citable context")
+        chunk_dicts = [_uploaded_document_chunk(uploaded_text), *chunk_dicts]
+
+    return {"retrieved_chunks": chunk_dicts}
 
 
 async def _clear_computation_fallback_node(state: QueryGraphState) -> dict:
@@ -445,8 +591,19 @@ def _route_after_temporal(state: QueryGraphState) -> str:
     if check_scope(state["query"]) is not None:
         logger.info("[FLOW] route_after_temporal: out of scope -> scoped_decline")
         return "scoped_decline"
-    if state.get("uploaded_document_text"):
-        logger.info("[FLOW] route_after_temporal: document attached -> document_extraction -> computation")
+    # Only force structured-field extraction once a rule is actually known
+    # (explicit computation_request, or one inferred from the query text) --
+    # otherwise a general/explanatory question about an attached document (or a
+    # Notices query, which has no computation rules at all) would be wrongly
+    # forced through capital-gains-shaped field extraction. Those fall through
+    # to retrieval below instead, where _retrieval_node injects the document as
+    # citable narration context.
+    rule_name = _known_rule_name(state)
+    if state.get("uploaded_document_text") and rule_name is not None:
+        logger.info(
+            "[FLOW] route_after_temporal: document attached + rule_name=%s known "
+            "-> document_extraction -> computation", rule_name,
+        )
         return "document_extraction"
     if state.get("computation_request") is not None:
         logger.info("[FLOW] route_after_temporal: computation_request given -> computation")
@@ -475,9 +632,10 @@ def _route_after_temporal(state: QueryGraphState) -> str:
 
 def _route_after_computation(state: QueryGraphState) -> str:
     """A query that reaches the computation node but doesn't match one of the
-    known rule names (_infer_rule_name returned None) isn't actually a
-    dead end -- it just means routing guessed COMPUTATION for a query the
-    deterministic engine has no rule for. Fall through to a real RAG search
+    known rule names (classify_intent's LLM call returned rule_name=None)
+    isn't actually a dead end -- it just means routing guessed COMPUTATION for
+    a query the deterministic engine has no rule for. Fall through to a real
+    RAG search
     instead of stranding the user with a static "mention MAT/AMT/..."
     message; that message is only appropriate once we've also failed to find
     anything relevant in the vector DB.

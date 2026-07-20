@@ -19,6 +19,7 @@ from app.schemas import AdminAuthResponse, AdminLoginRequest, AdminRegisterReque
 router = APIRouter(tags=["admin-auth"])
 bearer_scheme = HTTPBearer(auto_error=False)
 ADMIN_REFRESH_COOKIE = "taxai_admin_refresh_token"
+ADMIN_ACCESS_COOKIE = "taxai_admin_access_token"
 
 
 def serialize_admin(admin) -> AdminResponse:
@@ -36,6 +37,29 @@ def set_admin_refresh_cookie(response: Response, token: str, settings: Settings)
         key=ADMIN_REFRESH_COOKIE,
         value=token,
         max_age=max_age,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/admin",
+    )
+
+
+def set_admin_access_cookie(response: Response, token: str, settings: Settings) -> None:
+    max_age = int(timedelta(minutes=settings.access_token_minutes).total_seconds())
+    response.set_cookie(
+        key=ADMIN_ACCESS_COOKIE,
+        value=token,
+        max_age=max_age,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/admin",
+    )
+
+
+def clear_admin_access_cookie(response: Response, settings: Settings) -> None:
+    response.delete_cookie(
+        key=ADMIN_ACCESS_COOKIE,
         httponly=True,
         secure=settings.cookie_secure,
         samesite="lax",
@@ -66,24 +90,29 @@ async def issue_admin_tokens(
     access_token = create_admin_access_token(admin_id)
     refresh_token, refresh_token_id = create_admin_refresh_token(admin_id)
     await store_admin_refresh_token(redis, refresh_token_id, admin_id, settings)
+    set_admin_access_cookie(response, access_token, settings)
     set_admin_refresh_cookie(response, refresh_token, settings)
     return access_token
 
 
 async def get_current_admin(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ):
-    if credentials is None:
+    payload = getattr(request.state, "admin_token_payload", None)
+    token = credentials.credentials if credentials else None
+    if payload is None and token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing access token"
         )
 
-    try:
-        payload = decode_token(credentials.credentials, "admin_access")
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid access token"
-        ) from exc
+    if payload is None and token is not None:
+        try:
+            payload = decode_token(token, "admin_access")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid access token"
+            ) from exc
 
     admin = await prisma.admin.find_unique(where={"id": payload["sub"]})
     if admin is None:
@@ -218,6 +247,7 @@ async def logout_admin(
             pass
 
     clear_admin_refresh_cookie(response, settings)
+    clear_admin_access_cookie(response, settings)
 
 
 @router.get("/me", response_model=AdminResponse)

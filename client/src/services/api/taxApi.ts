@@ -14,7 +14,7 @@
  */
 
 import { mockTaxApi } from '../mock/mockTaxApi'
-import { queryTax, widgetsFromQueryResponse } from './taxQueryApi'
+import { queryTax, queryTaxWithDocument, widgetsFromQueryResponse, type QueryResponse } from './taxQueryApi'
 import { analyzeReturn as analyzeReturnRequest, widgetsFromAnalyzeResponse } from './analyzeReturnApi'
 import { createId } from '../../utils/id'
 import type { Message, SendPromptRequest, SendPromptResponse } from '../../types'
@@ -30,12 +30,7 @@ const DEFAULT_FOLLOW_UPS = [
   'Can you turn this into a filing checklist?',
 ]
 
-async function sendPrompt(
-  request: SendPromptRequest,
-  accessToken: string | null,
-): Promise<SendPromptResponse> {
-  const response = await queryTax(request.workflowId, request.prompt, accessToken)
-
+function sendPromptResponseFromQuery(response: QueryResponse): SendPromptResponse {
   const message: Message = {
     id: createId('message'),
     role: 'assistant',
@@ -55,6 +50,25 @@ async function sendPrompt(
       ? CLARIFICATION_FOLLOW_UPS
       : DEFAULT_FOLLOW_UPS,
   }
+}
+
+async function sendPrompt(
+  request: SendPromptRequest,
+  accessToken: string | null,
+): Promise<SendPromptResponse> {
+  const response = await queryTax(request.workflowId, request.prompt, accessToken)
+  return sendPromptResponseFromQuery(response)
+}
+
+// Companion to sendPrompt for a question asked alongside an attached
+// document, on any workflow -- see taxQueryApi.ts's queryTaxWithDocument.
+async function sendPromptWithDocument(
+  request: SendPromptRequest,
+  file: File,
+  accessToken: string | null,
+): Promise<SendPromptResponse> {
+  const response = await queryTaxWithDocument(request.workflowId, request.prompt, file, accessToken)
+  return sendPromptResponseFromQuery(response)
 }
 
 async function analyzeReturn(
@@ -89,5 +103,6 @@ async function analyzeReturn(
 export const taxApi = {
   ...mockTaxApi,
   sendPrompt,
+  sendPromptWithDocument,
   analyzeReturn,
 }

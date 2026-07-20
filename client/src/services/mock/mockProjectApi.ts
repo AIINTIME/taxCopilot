@@ -76,9 +76,6 @@ export const mockProjectApi = {
         },
       ],
       starterPrompts: [
-        'Summarize the project files and instructions.',
-        'What should I upload next?',
-        'Create a working checklist from this project.',
       ],
     }
   },

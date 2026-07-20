@@ -10,7 +10,7 @@ orchestration/graphs/query_graph.py's internals beyond run_query_graph itself.
 from datetime import date
 from typing import Any, TypedDict
 
-from app.services.query.intent_classifier import Intent
+from app.services.query.intent_classifier_types import Intent
 from app.shared.schemas.citation import Citation
 from app.shared.schemas.tax_year import TaxYearContext
 
@@ -32,23 +32,38 @@ class QueryGraphState(TypedDict, total=False):
     uploaded_document_text: str | None
     # Structured financial figures for a computation-intent query where no
     # computation_request/document was supplied -- paired with the rule name
-    # inferred from the query text (see _infer_rule_name in query_graph.py).
+    # the classify_intent node's LLM call identified (services.query.
+    # llm_query_understanding).
     computation_inputs: dict[str, Any] | None
     intent: Intent
+    # Rule name from services.query.llm_query_understanding's LLM call
+    # (classify_intent node) -- consumed directly by _computation_node. There
+    # is no deterministic fallback: a failed LLM call raises
+    # QueryUnderstandingError and aborts the graph before _computation_node
+    # runs, so this key is always present by the time it's read. None is a
+    # legitimate value meaning the LLM could not confidently identify a rule.
+    rule_name: str | None
     as_of: TaxYearContext
     # LLM-extracted, evidence-span-verified fields from uploaded_document_text
     # (services.rag.extraction.document_extraction) -- only verified fields
     # ever reach `computation_request`'s inputs.
     extracted_inputs: dict[str, Any]
     extraction_missing_fields: list[str]
-    # Deterministically (regex-based) extracted computation inputs from the
+    # LLM-proposed, evidence-span-verified computation inputs parsed from the
     # query text itself, e.g. "my salary is 21 lakhs" -> {"gross_income":
-    # 2100000, ...} (services.query.input_extractor). Distinct from
-    # `extracted_inputs` above, which comes from an uploaded document via an
-    # LLM, not the query text via regex. `assumptions` surfaces what was
-    # inferred (e.g. an unstated income type defaulted to salaried) so the
-    # narration/response can disclose it rather than silently assume it.
+    # 2100000, ...} (services.query.llm_query_understanding). Distinct from
+    # `extracted_inputs` above, which comes from an uploaded document rather
+    # than the query text. Every number here was re-derived deterministically
+    # from a verified span, never taken as the LLM's own stated value -- see
+    # llm_query_understanding.py. `assumptions` surfaces what was inferred
+    # (e.g. an unstated income type defaulted to salaried) so the narration/
+    # response can disclose it rather than silently assume it.
     parsed_query_inputs: dict[str, Any]
+    # Required fields llm_query_understanding could not fill -- mirrors
+    # ExtractedInputs.missing. Non-empty means parsed_query_inputs is not yet
+    # usable and the caller must ask for clarification instead of computing
+    # on it.
+    parsed_query_missing_fields: list[str]
     assumptions: list[str]
     computation_result: dict[str, Any] | None
 

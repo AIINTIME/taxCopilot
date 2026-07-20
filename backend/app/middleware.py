@@ -4,11 +4,13 @@ import time
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.core.config import get_settings
 from app.core.request_timing import (
     clear_request,
     format_timings,
     start_request,
 )
+from app.core.security import decode_token
 from app.db import prisma
 
 logger = logging.getLogger("app.request")
@@ -51,6 +53,29 @@ class RequestTimingMiddleware(BaseHTTPMiddleware):
             # Spans are per request; leaving them set would leak into whatever
             # task reuses this context.
             clear_request()
+
+
+class CookieJWTMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        settings = get_settings()
+        access_token = request.cookies.get(settings.access_cookie_name)
+        admin_access_token = request.cookies.get("taxai_admin_access_token")
+
+        if access_token:
+            try:
+                request.state.user_token_payload = decode_token(access_token, "access")
+            except ValueError:
+                request.state.user_token_payload = None
+
+        if admin_access_token:
+            try:
+                request.state.admin_token_payload = decode_token(
+                    admin_access_token, "admin_access"
+                )
+            except ValueError:
+                request.state.admin_token_payload = None
+
+        return await call_next(request)
 
 
 class AuthEventLoggingMiddleware(BaseHTTPMiddleware):

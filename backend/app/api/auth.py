@@ -17,6 +17,13 @@ from redis.asyncio import Redis
 
 from app.core.config import Settings, get_settings
 from app.core.redis import get_redis
+from app.core.rbac import (
+    ensure_default_role,
+    ensure_user_rbac_baseline,
+    get_user_permissions,
+    get_user_role_names,
+    set_user_roles,
+)
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -41,7 +48,10 @@ allowed_photo_types = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": 
 max_photo_size = 2 * 1024 * 1024
 
 
-def serialize_user(user) -> UserResponse:
+async def serialize_user(user) -> UserResponse:
+    await ensure_user_rbac_baseline(user)
+    roles = await get_user_role_names(user.id)
+    permissions = sorted(await get_user_permissions(user.id))
     return UserResponse(
         id=user.id,
         email=user.email,
@@ -50,7 +60,32 @@ def serialize_user(user) -> UserResponse:
         profile_photo_url=user.profilePhotoUrl,
         organization_id=user.organizationId,
         is_active=user.isActive,
+        roles=roles,
+        permissions=permissions,
         created_at=user.createdAt,
+    )
+
+
+def set_access_cookie(response: Response, token: str, settings: Settings) -> None:
+    max_age = int(timedelta(minutes=settings.access_token_minutes).total_seconds())
+    response.set_cookie(
+        key=settings.access_cookie_name,
+        value=token,
+        max_age=max_age,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/",
+    )
+
+
+def clear_access_cookie(response: Response, settings: Settings) -> None:
+    response.delete_cookie(
+        key=settings.access_cookie_name,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/",
     )
 
 
@@ -90,24 +125,29 @@ async def issue_tokens(
     access_token = create_access_token(user_id)
     refresh_token, refresh_token_id = create_refresh_token(user_id)
     await store_refresh_token(redis, refresh_token_id, user_id, settings)
+    set_access_cookie(response, access_token, settings)
     set_refresh_cookie(response, refresh_token, settings)
     return access_token
 
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ):
-    if credentials is None:
+    payload = getattr(request.state, "user_token_payload", None)
+    token = credentials.credentials if credentials else None
+    if payload is None and token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing access token"
         )
 
-    try:
-        payload = decode_token(credentials.credentials, "access")
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid access token"
-        ) from exc
+    if payload is None and token is not None:
+        try:
+            payload = decode_token(token, "access")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid access token"
+            ) from exc
 
     user = await prisma.user.find_unique(where={"id": payload["sub"]})
     if user is None:
@@ -154,9 +194,11 @@ async def register(
             "adminId": first_admin.id if first_admin else None,
         }
     )
+    default_role = await ensure_default_role(org.id)
+    await set_user_roles(user.id, [default_role.id], org.id)
     request.state.auth_user_id = user.id
     access_token = await issue_tokens(user.id, response, redis, settings)
-    return AuthResponse(access_token=access_token, user=serialize_user(user))
+    return AuthResponse(access_token=access_token, user=await serialize_user(user))
 
 
 @router.post("/login", response_model=AuthResponse)
@@ -180,7 +222,7 @@ async def login(
 
     request.state.auth_user_id = user.id
     access_token = await issue_tokens(user.id, response, redis, settings)
-    return AuthResponse(access_token=access_token, user=serialize_user(user))
+    return AuthResponse(access_token=access_token, user=await serialize_user(user))
 
 
 @router.post("/refresh", response_model=AuthResponse)
@@ -234,7 +276,7 @@ async def refresh(
         )
 
     access_token = await issue_tokens(user.id, response, redis, settings)
-    return AuthResponse(access_token=access_token, user=serialize_user(user))
+    return AuthResponse(access_token=access_token, user=await serialize_user(user))
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -255,11 +297,12 @@ async def logout(
             pass
 
     clear_refresh_cookie(response, settings)
+    clear_access_cookie(response, settings)
 
 
 @router.get("/me", response_model=UserResponse)
 async def me(user=Depends(get_current_user)):
-    return serialize_user(user)
+    return await serialize_user(user)
 
 
 @router.patch("/profile", response_model=UserResponse)
@@ -271,7 +314,7 @@ async def update_profile(payload: UpdateProfileRequest, user=Depends(get_current
             "bio": payload.bio.strip() if payload.bio else None,
         },
     )
-    return serialize_user(updated_user)
+    return await serialize_user(updated_user)
 
 
 @router.post("/profile/photo", response_model=UserResponse)
@@ -304,7 +347,7 @@ async def upload_profile_photo(
         where={"id": user.id},
         data={"profilePhotoUrl": photo_url},
     )
-    return serialize_user(updated_user)
+    return await serialize_user(updated_user)
 
 
 @router.patch("/password", status_code=status.HTTP_204_NO_CONTENT)

@@ -20,6 +20,8 @@ export type AppContextValue = AppState & {
   activeConversation: Conversation | null
   startConversation: (workflowId?: WorkflowId) => Promise<Conversation>
   selectConversation: (conversationId: string) => void
+  renameConversation: (conversationId: string, title: string) => void
+  deleteConversation: (conversationId: string) => void
   setWorkflow: (workflowId: WorkflowId) => void
   uploadFiles: (files: File[], category?: AttachmentCategory) => Promise<void>
   removeAttachment: (attachmentId: string) => void

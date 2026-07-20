@@ -13,6 +13,8 @@ export type AuthUser = {
   bio: string | null
   profile_photo_url: string | null
   organization_id: string | null
+  roles: string[]
+  permissions: string[]
   created_at: string
 }
 
@@ -108,6 +110,9 @@ export const authApi = {
         Authorization: `Bearer ${accessToken}`,
       },
     })
+  },
+  meWithCookie() {
+    return request<AuthUser>('/auth/me')
   },
   logout() {
     return request<void>('/auth/logout', { method: 'POST' })

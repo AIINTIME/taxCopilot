@@ -1,11 +1,17 @@
 """Derives computation inputs from a natural-language query. Pure, zero I/O.
 
-Deterministic and rule-based, NEVER an LLM. Intent classification tells the
-graph WHICH rule to run; this tells it WHAT to run the rule on. Both are
-control-flow decisions, and per the architecture the LLM makes neither -- and
-per validators.py, "every number must be sourced, never an LLM guess". A
-hallucinated input silently corrupts an otherwise exact computation, which is
-the worst failure this system can produce: wrong, and confidently traced.
+Deterministic and rule-based -- extract_inputs() itself never calls an LLM.
+Not currently wired into the live query flow (services.query.
+llm_query_understanding.classify_and_extract is the sole extractor there, with
+no deterministic fallback); kept as a standalone, still-tested utility.
+`parse_amount` and `detect_income_type` ARE actively used, though -- by
+llm_query_understanding.py: the LLM may point at a span of the query, but the
+number/type that actually reaches the computation engine always comes from
+re-parsing that span with the two functions below, never from the LLM's own
+stated value. Per validators.py, "every number must be sourced, never an LLM
+guess" -- a hallucinated input silently corrupts an otherwise exact
+computation, which is the worst failure this system can produce: wrong, and
+confidently traced.
 
 AMOUNTS ARE BOUND TO THE LABEL THAT GIVES THEM MEANING, never ranked. An
 earlier version took the largest number in the query as the income, which
@@ -87,9 +93,15 @@ _CAPITAL_GAINS_MARKERS = (
     "property sale",
 )
 
-# Words that indicate the number following is not an amount.
+# Words that indicate the number following is not an amount. The trailing
+# (?:-\d{2,4})? covers the common Indian FY/AY range notation ("FY 2024-25",
+# "AY 2025-2026") -- without it, the "-25" suffix is left as an unmatched,
+# separate number that both parse_amount and _find_amounts would otherwise
+# misread as a standalone amount.
 _YEAR_CONTEXT = re.compile(
-    r"\b(?:a\.?y\.?|f\.?y\.?|assessment|financial)\s*year\b|\b(?:ay|fy)\s*\d{4}", re.IGNORECASE
+    r"\b(?:a\.?y\.?|f\.?y\.?|assessment|financial)\s*year\b"
+    r"|\b(?:ay|fy)\s*\d{4}(?:-\d{2,4})?",
+    re.IGNORECASE,
 )
 
 # How far from a label an amount may sit and still be claimed by it. Wide enough
@@ -148,8 +160,8 @@ CLARIFICATION_PROMPTS: dict[str, str] = {
 }
 
 
-def clarification_questions(extracted: ExtractedInputs) -> list[str]:
-    return [CLARIFICATION_PROMPTS[m] for m in extracted.missing if m in CLARIFICATION_PROMPTS]
+def clarification_questions(missing: tuple[str, ...] | list[str]) -> list[str]:
+    return [CLARIFICATION_PROMPTS[m] for m in missing if m in CLARIFICATION_PROMPTS]
 
 
 def _amount_from_match(match: re.Match[str]) -> float | None:
@@ -172,12 +184,29 @@ def parse_amount(text: str) -> float | None:
     """Parse a single Indian-notation amount. Returns None if unparseable.
 
     Exposed for direct unit testing -- the numeral handling is the part most
-    likely to break silently.
+    likely to break silently. Skips a match whose own span falls inside a
+    year-context match (e.g. the "2024" in "FY 2024-25") and tries the next
+    one, rather than confidently returning a year as if it were a rupee
+    amount -- caught by a real evidence_span from a document-extraction path
+    (services/query/llm_query_understanding.py's reuse of this function
+    against uploaded-document text, where a line like "Gross Salary for FY
+    2024-25 is Rs 21,00,000" previously parsed as 2024 rather than
+    2,100,000). Deliberately span-overlap, not proximity: a nearby-window
+    check (as _find_amounts uses for a different purpose -- discarding every
+    year-labeled amount in a whole query) would also wrongly exclude the
+    real amount here, since "21,00,000" sits only a few characters after
+    "FY 2024-25" in that same sentence.
     """
-    match = _AMOUNT_PATTERN.search(text.strip())
-    if not match:
-        return None
-    return _amount_from_match(match)
+    stripped = text.strip()
+    year_spans = [match.span() for match in _YEAR_CONTEXT.finditer(stripped)]
+
+    for match in _AMOUNT_PATTERN.finditer(stripped):
+        if any(match.start() < end and match.end() > start for start, end in year_spans):
+            continue
+        value = _amount_from_match(match)
+        if value is not None:
+            return value
+    return None
 
 
 def _find_amounts(query: str) -> list[_Amount]:
@@ -283,7 +312,13 @@ def states_income(query: str) -> bool:
     return "gross_income" in _bind_labels_to_amounts(labels, amounts)
 
 
-def _detect_income_type(query: str) -> IncomeType | None:
+def detect_income_type(query: str) -> IncomeType | None:
+    """Re-derive an income type from a span of text via the marker list below.
+
+    Public (not `_`-prefixed): also used by llm_query_understanding.py to
+    verify an LLM-proposed income_type against the evidence span it cited,
+    rather than trusting the LLM's own classification of the span.
+    """
     lowered = query.lower()
     for income_type, markers in _INCOME_TYPE_MARKERS:
         if any(marker in lowered for marker in markers):
@@ -339,7 +374,7 @@ def extract_inputs(query: str) -> ExtractedInputs:
         values["gross_income"] = income.value
         provenance["gross_income"] = income.text
 
-    income_type = _detect_income_type(query)
+    income_type = detect_income_type(query)
     if income_type is None:
         # Materially changes the answer: only salary attracts the standard
         # deduction, so assuming it would silently understate tax for a

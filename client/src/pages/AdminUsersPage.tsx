@@ -7,6 +7,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  ShieldCheck,
   UserCheck,
   UserRound,
   UserX,
@@ -16,17 +17,19 @@ import {
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { adminApi } from '../services/api/adminApi'
-import type { AdminUserItem } from '../services/api/adminApi'
+import type { AdminUserItem, RoleItem } from '../services/api/adminApi'
 import { useAdminAuth } from '../store/useAdminAuth'
 
 const pageSize = 6
 
-type ActionMode = 'edit' | 'password' | 'status' | null
+type ActionMode = 'edit' | 'password' | 'status' | 'roles' | null
 
 export function AdminUsersPage() {
   const { accessToken } = useAdminAuth()
   const [users, setUsers] = useState<AdminUserItem[]>([])
+  const [roles, setRoles] = useState<RoleItem[]>([])
   const [query, setQuery] = useState('')
+  const [roleFilter, setRoleFilter] = useState('all')
   const [page, setPage] = useState(1)
   const [isLoading, setIsLoading] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -36,12 +39,14 @@ export function AdminUsersPage() {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>([])
 
   const [actionUser, setActionUser] = useState<AdminUserItem | null>(null)
   const [actionMode, setActionMode] = useState<ActionMode>(null)
   const [editName, setEditName] = useState('')
   const [editEmail, setEditEmail] = useState('')
   const [newPassword, setNewPassword] = useState('')
+  const [editRoleIds, setEditRoleIds] = useState<string[]>([])
 
   async function loadUsers() {
     if (!accessToken) return
@@ -50,6 +55,7 @@ export function AdminUsersPage() {
     setError('')
     try {
       setUsers(await adminApi.getUsers(accessToken))
+      setRoles(await adminApi.getRoles(accessToken))
     } catch (err) {
       setUsers([])
       setError(err instanceof Error ? err.message : 'Unable to load users')
@@ -64,22 +70,25 @@ export function AdminUsersPage() {
 
   const filteredUsers = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
-    if (!normalizedQuery) return users
-
     return users.filter((user) => {
-      return (
+      const matchesQuery = !normalizedQuery || (
         user.name.toLowerCase().includes(normalizedQuery) ||
         user.email.toLowerCase().includes(normalizedQuery)
       )
+      const matchesRole = roleFilter === 'all'
+        || (roleFilter === 'unassigned' && user.role_ids.length === 0)
+        || user.role_ids.includes(roleFilter)
+
+      return matchesQuery && matchesRole
     })
-  }, [query, users])
+  }, [query, roleFilter, users])
 
   const pageCount = Math.max(1, Math.ceil(filteredUsers.length / pageSize))
   const visibleUsers = filteredUsers.slice((page - 1) * pageSize, page * pageSize)
 
   useEffect(() => {
     setPage(1)
-  }, [query])
+  }, [query, roleFilter])
 
   useEffect(() => {
     if (page > pageCount) setPage(pageCount)
@@ -91,6 +100,7 @@ export function AdminUsersPage() {
     setEditName(user.name)
     setEditEmail(user.email)
     setNewPassword('')
+    setEditRoleIds([])
     setError('')
     setMessage('')
   }
@@ -101,6 +111,7 @@ export function AdminUsersPage() {
     setEditName('')
     setEditEmail('')
     setNewPassword('')
+    setEditRoleIds([])
   }
 
   function openPasswordReset(user: AdminUserItem) {
@@ -109,8 +120,36 @@ export function AdminUsersPage() {
     setEditName('')
     setEditEmail('')
     setNewPassword('')
+    setEditRoleIds([])
     setError('')
     setMessage('')
+  }
+
+  function openRoles(user: AdminUserItem) {
+    setActionUser(user)
+    setActionMode('roles')
+    setEditName('')
+    setEditEmail('')
+    setNewPassword('')
+    setEditRoleIds(user.role_ids)
+    setError('')
+    setMessage('')
+  }
+
+  function toggleCreateRole(roleId: string) {
+    setSelectedRoleIds((current) => (
+      current.includes(roleId)
+        ? current.filter((id) => id !== roleId)
+        : [...current, roleId]
+    ))
+  }
+
+  function toggleEditRole(roleId: string) {
+    setEditRoleIds((current) => (
+      current.includes(roleId)
+        ? current.filter((id) => id !== roleId)
+        : [...current, roleId]
+    ))
   }
 
   function openStatusChange(user: AdminUserItem) {
@@ -132,14 +171,42 @@ export function AdminUsersPage() {
     setMessage('')
 
     try {
-      const createdUser = await adminApi.createUser(accessToken, { name, email, password })
+      const createdUser = await adminApi.createUser(accessToken, {
+        name,
+        email,
+        password,
+        role_ids: selectedRoleIds,
+      })
       setUsers((current) => [createdUser, ...current])
       setName('')
       setEmail('')
       setPassword('')
+      setSelectedRoleIds([])
       setMessage(`Created account for ${createdUser.name}.`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to create user')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function handleAssignRoles(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!accessToken || !actionUser) return
+
+    setIsSubmitting(true)
+    setError('')
+    setMessage('')
+
+    try {
+      const updatedUser = await adminApi.assignUserRoles(accessToken, actionUser.id, editRoleIds)
+      setUsers((current) => (
+        current.map((user) => (user.id === updatedUser.id ? updatedUser : user))
+      ))
+      closeActionModal()
+      setMessage(`Updated roles for ${updatedUser.name}.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to assign roles')
     } finally {
       setIsSubmitting(false)
     }
@@ -235,14 +302,26 @@ export function AdminUsersPage() {
 
       <div className="admin-users-layout">
         <div className="admin-users-panel">
-          <div className="admin-users-search">
-            <Search size={16} />
-            <input
-              type="search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search users by name or email"
-            />
+          <div className="admin-users-filters">
+            <div className="admin-users-search">
+              <Search size={16} />
+              <input
+                type="search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search users by name or email"
+              />
+            </div>
+            <label className="admin-users-type-filter">
+              <span>User type</span>
+              <select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
+                <option value="all">All users</option>
+                {roles.map((role) => (
+                  <option key={role.id} value={role.id}>{role.name}</option>
+                ))}
+                <option value="unassigned">No role</option>
+              </select>
+            </label>
           </div>
 
           {error ? <p className="admin-form-error">{error}</p> : null}
@@ -257,6 +336,7 @@ export function AdminUsersPage() {
             <div className="admin-users-table__head">
               <span>User</span>
               <span>Email</span>
+              <span>Roles</span>
               <span>Created</span>
               <span>Status</span>
               <span>Actions</span>
@@ -276,6 +356,7 @@ export function AdminUsersPage() {
                     <strong>{user.name}</strong>
                   </div>
                   <span>{user.email}</span>
+                  <span>{user.roles.length ? user.roles.join(', ') : 'No roles'}</span>
                   <time>{new Date(user.created_at).toLocaleDateString()}</time>
                   <span className={`admin-badge ${user.is_active ? 'admin-badge--green' : 'admin-badge--red'}`}>
                     {user.is_active ? 'Active' : 'Inactive'}
@@ -290,6 +371,13 @@ export function AdminUsersPage() {
                       title="Set password"
                     >
                       <KeyRound size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openRoles(user)}
+                      title="Assign roles"
+                    >
+                      <ShieldCheck size={14} />
                     </button>
                     <button
                       type="button"
@@ -364,6 +452,23 @@ export function AdminUsersPage() {
                 required
               />
             </label>
+            <div className="admin-role-picker">
+              <span>Roles</span>
+              {roles.length === 0 ? (
+                <small>No roles available yet.</small>
+              ) : (
+                roles.map((role) => (
+                  <label key={role.id}>
+                    <input
+                      type="checkbox"
+                      checked={selectedRoleIds.includes(role.id)}
+                      onChange={() => toggleCreateRole(role.id)}
+                    />
+                    <span>{role.name}</span>
+                  </label>
+                ))
+              )}
+            </div>
             <button type="submit" className="admin-primary-action" disabled={isSubmitting}>
               <Plus size={14} />
               Create user
@@ -382,9 +487,11 @@ export function AdminUsersPage() {
                     ? 'Edit user'
                     : actionMode === 'password'
                       ? 'Set password'
-                      : actionUser.is_active
-                        ? 'Deactivate user'
-                        : 'Reactivate user'}
+                      : actionMode === 'roles'
+                        ? 'Assign roles'
+                        : actionUser.is_active
+                          ? 'Deactivate user'
+                          : 'Reactivate user'}
                 </p>
                 <h3>{actionUser.name}</h3>
               </div>
@@ -436,6 +543,26 @@ export function AdminUsersPage() {
                 <button type="submit" className="admin-secondary-action" disabled={isSubmitting}>
                   <KeyRound size={14} />
                   Set password
+                </button>
+              </form>
+            ) : actionMode === 'roles' ? (
+              <form className="admin-users-form__inner" onSubmit={handleAssignRoles}>
+                <div className="admin-role-picker admin-role-picker--modal">
+                  <span>Assigned roles</span>
+                  {roles.map((role) => (
+                    <label key={role.id}>
+                      <input
+                        type="checkbox"
+                        checked={editRoleIds.includes(role.id)}
+                        onChange={() => toggleEditRole(role.id)}
+                      />
+                      <span>{role.name}</span>
+                    </label>
+                  ))}
+                </div>
+                <button type="submit" className="admin-secondary-action" disabled={isSubmitting}>
+                  <ShieldCheck size={14} />
+                  Save roles
                 </button>
               </form>
             ) : (

@@ -1,6 +1,6 @@
-"""System prompt for services.rag.extraction.document_extraction -- query-time
-extraction of structured capital-gains figures from a user's uploaded
-document (e.g. a sale deed or broker contract note).
+"""System prompt builder for services.rag.extraction.document_extraction --
+query-time extraction of structured computation figures from a user's
+uploaded document (e.g. a sale deed, P&L statement, or broker contract note).
 
 Same evidence-span discipline as
 services/ingestion/kg_graph_extraction/rule_proposal.py's statutory-rule
@@ -9,35 +9,61 @@ source text, never infer/estimate/round one. Every field is independently
 re-verified against the source text after this call
 (services/rag/extraction/document_extraction.py) -- this prompt is a
 best-effort request, not the trust boundary itself.
+
+One generic prompt, parameterized by a per-rule field spec list, rather than
+a hand-written prompt per computation rule -- the field list is the single
+source of truth (document_extraction.py's RULE_FIELD_SPECS), so a new rule
+or a changed field name here never has a second copy to fall out of sync.
 """
 
-CAPITAL_GAINS_EXTRACTION_SYSTEM_PROMPT = """You are a tax document field extractor.
+from dataclasses import dataclass
 
-Given the text of a user's document (e.g. a sale deed or broker contract note),
-extract the fields needed to compute capital gains -- if and only if they are
-explicitly stated in the text. Respond with ONLY a valid JSON object. No
-markdown fences, no explanation, no preamble.
+FieldKind = str  # "number" | "date" | "enum" | "bool"
+
+
+@dataclass(frozen=True)
+class FieldSpec:
+    name: str
+    kind: FieldKind
+    required: bool
+    enum_values: tuple[str, ...] | None = None
+    description: str = ""
+
+
+def _field_schema_line(spec: FieldSpec) -> str:
+    if spec.kind == "enum" and spec.enum_values:
+        value_type = " | ".join(f'"{v}"' for v in spec.enum_values)
+    elif spec.kind == "date":
+        value_type = '"YYYY-MM-DD"'
+    elif spec.kind == "bool":
+        value_type = "true | false"
+    else:
+        value_type = "number"
+
+    suffix = f" -- {spec.description}" if spec.description else ""
+    return f'    "{spec.name}": {{"value": {value_type}, "evidence_span": string}} | null{suffix}'
+
+
+def build_extraction_prompt(field_specs: list[FieldSpec]) -> str:
+    schema_lines = "\n".join(_field_schema_line(spec) for spec in field_specs)
+
+    return f"""You are a tax document field extractor.
+
+Given the text of a user's document (e.g. a sale deed, filed return, P&L
+statement, or broker contract note), extract the fields below -- if and only
+if they are explicitly stated in the text. Respond with ONLY a valid JSON
+object. No markdown fences, no explanation, no preamble.
 
 Schema:
-{
-  "fields": {
-    "asset_class": {"value": "listed_equity_or_equity_mf" | "other", "evidence_span": string} | null,
-    "acquisition_date": {"value": "YYYY-MM-DD", "evidence_span": string} | null,
-    "transfer_date": {"value": "YYYY-MM-DD", "evidence_span": string} | null,
-    "full_value_consideration": {"value": number, "evidence_span": string} | null,
-    "cost_of_acquisition": {"value": number, "evidence_span": string} | null,
-    "cost_of_improvement": {"value": number, "evidence_span": string} | null
-  }
-}
+{{
+  "fields": {{
+{schema_lines}
+  }}
+}}
 
 Rules you must follow:
 - Set a field to null if it is not explicitly stated in the text -- do NOT
   infer, estimate, round, or guess a value.
-- "asset_class" must be "listed_equity_or_equity_mf" only if the document
-  explicitly describes STT-paid listed equity shares, equity-oriented mutual
-  fund units, or business trust units; otherwise use "other" (immovable
-  property, unlisted shares, or any other capital asset) -- only if the
-  underlying asset type is explicitly stated, else null.
 - Dates must be normalized to YYYY-MM-DD only when the source text states an
   unambiguous calendar date; if the date is ambiguous or only a year/month is
   given, set the field to null rather than guessing a day.

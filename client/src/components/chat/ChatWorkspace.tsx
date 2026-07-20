@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertCircle, FileText, FolderOpen, RefreshCcw, UploadCloud } from 'lucide-react'
-import { useMemo, useState, type DragEvent } from 'react'
+import { useState, type DragEvent } from 'react'
 import { useAppState } from '../../store/useAppState'
 import type { AttachmentCategory, Workflow } from '../../types'
 import { MessageList } from '../messages/MessageList'
@@ -13,21 +13,9 @@ type ChatWorkspaceProps = {
 }
 
 export function ChatWorkspace({ workflow }: ChatWorkspaceProps) {
-  const { activeConversation, error, isThinking, retryLastPrompt, followUps, sendPrompt, uploadFiles } = useAppState()
+  const { activeConversation, error, isThinking, retryLastPrompt, uploadFiles } = useAppState()
   const [dragCategory, setDragCategory] = useState<AttachmentCategory | null>(null)
   const messages = activeConversation?.workflowId === workflow.id ? activeConversation.messages : []
-
-  const suggestedPrompts = useMemo(
-    () =>
-      followUps.length > 0
-        ? followUps
-        : [
-            'Summarize the tax position.',
-            'What documents are missing?',
-            'Show the safest next steps.',
-          ],
-    [followUps],
-  )
 
   function hasFiles(event: DragEvent<HTMLElement>) {
     return Array.from(event.dataTransfer.types).includes('Files')
@@ -76,13 +64,6 @@ export function ChatWorkspace({ workflow }: ChatWorkspaceProps) {
       onDrop={handleDrop}
     >
       <DragUploadOverlay workflow={workflow} activeCategory={dragCategory} />
-      <header className="workspace-header">
-        <div>
-          <p>{workflow.shortName} workflow</p>
-          <h1>{workflow.name}</h1>
-        </div>
-        <span>{workflow.purpose}</span>
-      </header>
 
       <div className="message-scroll">
         {messages.length === 0 ? (
@@ -113,14 +94,6 @@ export function ChatWorkspace({ workflow }: ChatWorkspaceProps) {
             </button>
           </div>
         ) : null}
-      </div>
-
-      <div className="suggested-prompts" aria-label="Follow up prompts">
-        {suggestedPrompts.map((prompt) => (
-          <button key={prompt} type="button" onClick={() => void sendPrompt(prompt)}>
-            {prompt}
-          </button>
-        ))}
       </div>
 
       <ChatComposer workflow={workflow} />

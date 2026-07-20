@@ -15,18 +15,19 @@ model Organization {
   createdAt   DateTime            @default(now())
   admins      Admin[]
   users       User[]
+  roles       Role[]
   documents   Document[]
   proposals   GraphRuleProposal[]
 }
 
 model Admin {
-  id             String        @id @default(uuid())
+  id             String       @id @default(uuid())
   username       String
   passwordHash   String
   organizationId String
-  organization   Organization  @relation(fields: [organizationId], references: [id])
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
   users          User[]
   documents      Document[]
 
@@ -34,25 +35,73 @@ model Admin {
 }
 
 model User {
-  id              String        @id @default(uuid())
-  email           String        @unique
+  id              String              @id @default(uuid())
+  email           String              @unique
   name            String
   bio             String?
   profilePhotoUrl String?
   passwordHash    String
-  isActive        Boolean       @default(true)
+  isActive        Boolean             @default(true)
   adminId         String?
-  admin           Admin?        @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  admin           Admin?              @relation(fields: [adminId], references: [id], onDelete: SetNull)
   organizationId  String?
-  organization    Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  organization    Organization?       @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
   authLogs        AuthEventLog[]
+  roles           UserRole[]
   queryDocuments  UserQueryDocument[]
 
   @@index([email])
   @@index([adminId])
   @@index([organizationId])
+}
+
+model Role {
+  id             String           @id @default(uuid())
+  name           String
+  description    String?
+  organizationId String
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  isSystem       Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  permissions    RolePermission[]
+  users          UserRole[]
+
+  @@unique([name, organizationId])
+  @@index([organizationId])
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  key         String           @unique
+  label       String
+  description String?
+  category    String
+  createdAt   DateTime         @default(now())
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model UserRole {
+  userId     String
+  roleId     String
+  assignedAt DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role       Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId])
 }
 
 /// A user's own uploaded document for a single query/session (e.g. a sale
@@ -138,18 +187,18 @@ enum ProposalStatus {
 
 /// Tracks every admin-uploaded document through the ingestion pipeline.
 model Document {
-  id                String            @id @default(uuid())
+  id                String              @id @default(uuid())
   filename          String
-  contentHash       String            @unique
+  contentHash       String              @unique
   s3Path            String
   organizationId    String
-  organization      Organization      @relation(fields: [organizationId], references: [id])
+  organization      Organization        @relation(fields: [organizationId], references: [id])
   uploadedByAdminId String
-  uploadedByAdmin   Admin             @relation(fields: [uploadedByAdminId], references: [id])
-  chunksEmbedded    Int               @default(0)
-  status            DocumentStatus    @default(PROCESSING)
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  uploadedByAdmin   Admin               @relation(fields: [uploadedByAdminId], references: [id])
+  chunksEmbedded    Int                 @default(0)
+  status            DocumentStatus      @default(PROCESSING)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
   proposals         GraphRuleProposal[]
 
   @@index([organizationId])
