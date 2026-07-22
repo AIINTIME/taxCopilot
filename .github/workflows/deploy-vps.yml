@@ -1,0 +1,146 @@
+name: Deploy To VPS
+
+on:
+  push:
+    branches:
+      - main
+      - feature/vps-deploy
+  workflow_dispatch:
+    inputs:
+      deploy_path:
+        description: "Absolute path on the VPS where the app should be deployed"
+        required: false
+        default: "/root/taxcopilot"
+
+env:
+  VPS_HOST: ${{ secrets.VPS_HOST }}
+  VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+  VPS_USER: ${{ secrets.VPS_USER || 'root' }}
+  DEFAULT_DEPLOY_PATH: ${{ secrets.VPS_APP_DIR || '/root/taxcopilot' }}
+  DEFAULT_VITE_API_BASE_URL: http://${{ secrets.VPS_HOST }}:8090
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve deployment values
+        id: deploy_vars
+        env:
+          CONFIGURED_VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL || vars.VITE_API_BASE_URL || '' }}
+          FRONTEND_ENV: ${{ secrets.FRONTEND_ENV }}
+          INPUT_DEPLOY_PATH: ${{ github.event.inputs.deploy_path || '' }}
+        run: |
+          set -euo pipefail
+
+          image_tag="${GITHUB_SHA::12}"
+          deploy_path="${INPUT_DEPLOY_PATH:-$DEFAULT_DEPLOY_PATH}"
+          vite_api_base_url="$CONFIGURED_VITE_API_BASE_URL"
+
+          if [ -z "$vite_api_base_url" ] && [ -n "${FRONTEND_ENV:-}" ]; then
+            vite_api_base_url="$(printf '%s\n' "$FRONTEND_ENV" | tr -d '\r' | sed -n 's/^VITE_API_BASE_URL=//p' | tail -n 1)"
+          fi
+
+          vite_api_base_url="${vite_api_base_url:-$DEFAULT_VITE_API_BASE_URL}"
+
+          {
+            echo "image_tag=$image_tag"
+            echo "backend_image=taxcopilot-backend_img"
+            echo "frontend_image=taxcopilot-frontend_img"
+            echo "deploy_path=$deploy_path"
+            echo "vite_api_base_url=$vite_api_base_url"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker images
+        env:
+          BACKEND_IMAGE: ${{ steps.deploy_vars.outputs.backend_image }}
+          FRONTEND_IMAGE: ${{ steps.deploy_vars.outputs.frontend_image }}
+          VITE_API_BASE_URL: ${{ steps.deploy_vars.outputs.vite_api_base_url }}
+        run: |
+          set -euo pipefail
+          docker build --pull --tag "$BACKEND_IMAGE" ./backend
+          docker build --pull --build-arg "VITE_API_BASE_URL=$VITE_API_BASE_URL" --tag "$FRONTEND_IMAGE" ./client
+
+      - name: Package images and Compose bundle
+        env:
+          BACKEND_ENV: ${{ secrets.BACKEND_ENV_FILE || secrets.BACKEND_ENV || '' }}
+          BACKEND_IMAGE: ${{ steps.deploy_vars.outputs.backend_image }}
+          FRONTEND_IMAGE: ${{ steps.deploy_vars.outputs.frontend_image }}
+        run: |
+          set -euo pipefail
+
+          docker save "$BACKEND_IMAGE" "$FRONTEND_IMAGE" | gzip > docker-images.tar.gz
+
+          mkdir -p deploy_bundle/backend
+          cp docker-compose.yml deploy_bundle/docker-compose.yml
+          printf '%s' "${BACKEND_ENV:-}" > deploy_bundle/backend/.env
+
+          cat > deploy_bundle/.env << EOF
+          COMPOSE_PROJECT_NAME=taxcopilot
+          BACKEND_IMAGE=$BACKEND_IMAGE
+          FRONTEND_IMAGE=$FRONTEND_IMAGE
+          BACKEND_PORT=8090
+          FRONTEND_PORT=8091
+          EOF
+
+          tar -czf deploy-bundle.tar.gz -C deploy_bundle .
+
+      - name: Setup SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p "$VPS_PORT" "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload artifacts to VPS
+        env:
+          IMAGE_TAG: ${{ steps.deploy_vars.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          scp -P "$VPS_PORT" docker-images.tar.gz "$VPS_USER@$VPS_HOST:/tmp/taxcopilot-docker-images-$IMAGE_TAG.tar.gz"
+          scp -P "$VPS_PORT" deploy-bundle.tar.gz "$VPS_USER@$VPS_HOST:/tmp/taxcopilot-deploy-bundle-$IMAGE_TAG.tar.gz"
+
+      - name: Deploy on VPS
+        env:
+          DEPLOY_PATH: ${{ steps.deploy_vars.outputs.deploy_path }}
+          IMAGE_TAG: ${{ steps.deploy_vars.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          remote_deploy_path="$(printf '%q' "$DEPLOY_PATH")"
+          remote_image_tag="$(printf '%q' "$IMAGE_TAG")"
+
+          ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "DEPLOY_PATH=$remote_deploy_path IMAGE_TAG=$remote_image_tag bash -s" << 'REMOTE_SCRIPT'
+            set -euo pipefail
+
+            image_archive="/tmp/taxcopilot-docker-images-${IMAGE_TAG}.tar.gz"
+            bundle_archive="/tmp/taxcopilot-deploy-bundle-${IMAGE_TAG}.tar.gz"
+
+            mkdir -p "$DEPLOY_PATH"
+            tar -xzf "$bundle_archive" -C "$DEPLOY_PATH"
+            rm -f "$bundle_archive"
+
+            gzip -dc "$image_archive" | docker load
+            rm -f "$image_archive"
+
+            if ! docker compose version >/dev/null 2>&1; then
+              mkdir -p /usr/local/lib/docker/cli-plugins
+              curl -fsSL https://github.com/docker/compose/releases/download/v2.24.6/docker-compose-linux-x86_64 \
+                -o /usr/local/lib/docker/cli-plugins/docker-compose
+              chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+            fi
+
+            cd "$DEPLOY_PATH"
+            docker compose --env-file .env config >/dev/null
+            docker compose --env-file .env up -d --no-build --remove-orphans
+            docker image prune -f >/dev/null || true
+            docker compose --env-file .env ps
+          REMOTE_SCRIPT

@@ -1,0 +1,49 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-taxcopilot}_redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - taxcopilot_net
+
+  backend:
+    image: ${BACKEND_IMAGE}
+    container_name: ${COMPOSE_PROJECT_NAME:-taxcopilot}_backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # Always the in-network redis service, regardless of what REDIS_URL is set to in backend/.env
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - redis
+    ports:
+      - "${BACKEND_PORT:-8090}:8000"
+    volumes:
+      # User-generated content that must survive image rebuilds / redeploys
+      - backend_public_uploads:/app/public/uploads
+      - backend_uploads:/app/uploads
+    networks:
+      - taxcopilot_net
+
+  frontend:
+    image: ${FRONTEND_IMAGE}
+    container_name: ${COMPOSE_PROJECT_NAME:-taxcopilot}_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-8091}:80"
+    networks:
+      - taxcopilot_net
+
+networks:
+  taxcopilot_net:
+    driver: bridge
+
+volumes:
+  redis_data:
+  backend_public_uploads:
+  backend_uploads:

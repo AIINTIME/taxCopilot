@@ -1,0 +1,28 @@
+# Secrets - never bake these into an image
+.env
+.env.*
+!.env.example
+
+# Python cache and tooling
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+ENV/
+
+# Runtime content that should come from volumes, not the image
+public/uploads/
+
+# VCS / editor noise
+.git/
+.gitignore
+.idea/
+.vscode/
+*.log

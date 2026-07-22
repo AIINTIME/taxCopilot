@@ -1,0 +1,20 @@
+flowchart TD
+    User(["🧑 You ask a tax question"])
+    App["📱 TaxAI App"]
+    Understand{"What do you need?"}
+    Calc["🧮 Calculate your tax<br/>using official tax rules"]
+    Search["📚 Look through trusted<br/>government tax documents"]
+    Write["✍️ AI writes a<br/>clear, plain-English answer"]
+    Verify["✅ Every fact is double-checked<br/>against the real source<br/>(nothing made up)"]
+    Answer(["📄 You get your answer<br/>+ the sources behind it"])
+    Record[("🔒 Kept on record,<br/>so answers can always be audited")]
+    Knowledge[("🏛️ Knowledge base of<br/>tax laws & documents")]
+
+    User --> App --> Understand
+    Understand -->|"A calculation<br/>(how much do I owe?)"| Calc
+    Understand -->|"A question<br/>(what does this rule mean?)"| Search
+    Knowledge -.kept up to date.-> Search
+    Calc --> Verify
+    Search --> Write --> Verify
+    Verify --> Answer
+    Answer --> Record

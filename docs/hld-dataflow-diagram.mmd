@@ -1,0 +1,93 @@
+flowchart TD
+    Client["Client<br/>React + Vite SPA"]
+
+    subgraph API["API Layer (FastAPI)"]
+        AuthAPI["Auth Routes<br/>(user + admin, JWT)"]
+        QueryAPI["Query Routes<br/>/api/v1/{domain}/query"]
+        AnalysisAPI["Analysis Routes<br/>/analyze-return"]
+        AdminAPI["Admin Routes<br/>(dashboard, upload)"]
+    end
+
+    subgraph QORCH["Query Orchestration (LangGraph)"]
+        Intent["Intent Classifier<br/>+ Temporal Resolver"]
+
+        subgraph COMP["Computation Branch"]
+            CompEngine["Computation Engine<br/>(deterministic tax rules)"]
+            GTCheck["Ground-Truth Check"]
+            CompCite["Computation Citations"]
+            CompEngine --> GTCheck --> CompCite
+        end
+
+        subgraph RET["Retrieval Branch"]
+            Hybrid["Hybrid Retriever<br/>(vector + structured, RRF fusion)"]
+            Narrate["LLM Narration"]
+            EvGate["Evidence Gate<br/>(citation verification)"]
+            Hybrid --> Narrate --> EvGate
+        end
+
+        Intent --> CompEngine
+        Intent --> Hybrid
+        Assemble["Response Assembly"]
+        CompCite --> Assemble
+        EvGate --> Assemble
+    end
+
+    subgraph ANLYS["ITR Return Analysis"]
+        Extract["Return Extractor"]
+        Recon["Reconciler<br/>(recompute via same rules)"]
+        Penalty["Penalty Mapper"]
+        Score["AI Score"]
+        Extract --> Recon --> Penalty --> Score
+    end
+
+    subgraph INGEST["Ingestion Pipeline (scheduled / admin-triggered)"]
+        Sources["Gov Scraper +<br/>Admin Document Upload"]
+        Parse["Parse & Chunk"]
+        Dedup["Dedup<br/>(content hash)"]
+        Embed["Embed"]
+        Upsert["Upsert"]
+        KGExtract["KG Rule Extraction"]
+        Sources --> Parse --> Dedup --> Embed --> Upsert
+        Upsert --> KGExtract
+    end
+
+    subgraph EXT["External Services"]
+        OpenAI["OpenAI<br/>(LLM + Embeddings)"]
+        Groq["Groq<br/>(fallback LLM)"]
+    end
+
+    subgraph STORE["Data Stores"]
+        PG[("PostgreSQL")]
+        Redis[("Redis")]
+        Pinecone[("Pinecone")]
+        Neo4j[("Neo4j")]
+    end
+
+    Client --> AuthAPI
+    Client --> QueryAPI
+    Client --> AnalysisAPI
+    Client --> AdminAPI
+
+    QueryAPI --> Intent
+    Assemble --> AuditLog["Audit Log"]
+    AuditLog --> PG
+    Assemble --> Client
+
+    AnalysisAPI --> Extract
+    Score --> Client
+    Penalty --> Neo4j
+
+    AdminAPI --> Sources
+
+    AuthAPI --> Redis
+    AuthAPI --> PG
+
+    GTCheck --> Neo4j
+    Hybrid --> Pinecone
+    Hybrid --> Neo4j
+    Narrate --> OpenAI
+    Narrate -.fallback.-> Groq
+
+    Embed --> OpenAI
+    Upsert --> Pinecone
+    KGExtract --> Neo4j
