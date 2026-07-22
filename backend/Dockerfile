@@ -1,8 +1,9 @@
 FROM python:3.12-slim
 
-# openssl/ca-certificates are required by the Prisma Python client's query-engine binary
+# openssl/ca-certificates are required by the Prisma Python client's query-engine binary;
+# libatomic1 is required by the Node.js runtime Prisma bootstraps via nodeenv
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssl ca-certificates \
+    && apt-get install -y --no-install-recommends openssl ca-certificates libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
